@@ -3,9 +3,9 @@ import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
 import { ScrollArea } from "./ui/scroll-area";
 import { Avatar, AvatarFallback } from "./ui/avatar";
-import { Send, User, Bot, Sparkles } from "lucide-react";
+import { Send, User, Bot, Sparkles, Stethoscope } from "lucide-react";
 import { MarkdownRenderer } from "./MarkdownRenderer";
-import { processChatStream, clearSession } from "../services/api";
+import { processChatStream, clearSession, createMedicalChatStream, processMedicalChatStream, clearMedicalSession, analyzeSymptoms } from "../services/api";
 import { toast } from "sonner";
 
 type Reference = {
@@ -25,6 +25,8 @@ type Message = {
   references?: Reference[];
 };
 
+type ChatMode = "general" | "medical";
+
 type ChatInterfaceProps = {
   onClearChat: () => void;
   fileId?: string;
@@ -38,12 +40,20 @@ export function ChatInterface({
   fileName,
   threadId = "default",
 }: ChatInterfaceProps) {
-  const initialAssistant =
-    "Hello! I'm your AI assistant. You can chat directly, and if you upload a PDF I can answer with document-grounded citations.";
+  const [chatMode, setChatMode] = useState<ChatMode>("general");
+  
+  const initialAssistant = chatMode === "medical" 
+    ? "您好！我是您的医疗AI助手。我可以帮助您分析症状、提供医疗建议，并基于上传的医疗文档回答问题。请注意，我的建议仅供参考，不能替代专业医疗诊断。"
+    : "Hello! I'm your AI assistant. You can chat directly, and if you upload a PDF I can answer with document-grounded citations.";
 
   const [messages, setMessages] = useState<Message[]>([
     { id: "welcome", type: "assistant", content: initialAssistant, timestamp: new Date() },
   ]);
+
+  // 监控 chatMode 状态变化
+  useEffect(() => {
+    console.log("🔄 chatMode state changed to:", chatMode);
+  }, [chatMode]);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
 
@@ -111,90 +121,183 @@ export function ChatInterface({
     citationIdsRef.current = new Set();
 
     try {
-      // 开始流式
-      await processChatStream(
-        userText,
-        // onToken
-        (token: string) => {
-          setCurrentResponse((prev) => prev + token);
-          currentResponseRef.current += token;
-        },
-        // onCitation
-        (c: {
-          citation_id: string;
-          fileId: string;
-          rank: number;
-          page: number;
-          previewUrl: string;
-          snippet?: string;
-        }) => {
-          // 去重：按 citation_id
-          if (!c.citation_id || citationIdsRef.current.has(c.citation_id)) return;
-          citationIdsRef.current.add(c.citation_id);
+      if (chatMode === "medical") {
+        // 使用医疗聊天API
+        await processMedicalChatStream(
+          userText,
+          // onToken
+          (token: string) => {
+            setCurrentResponse((prev) => prev + token);
+            currentResponseRef.current += token;
+          },
+          // onCitation
+          (c: {
+            citation_id: string;
+            fileId: string;
+            rank: number;
+            page: number;
+            previewUrl: string;
+            snippet?: string;
+          }) => {
+            // 去重：按 citation_id
+            if (!c.citation_id || citationIdsRef.current.has(c.citation_id)) return;
+            citationIdsRef.current.add(c.citation_id);
 
-          const newRef: Reference = {
-            id: currentReferencesRef.current.length + 1,
-            text: `第 ${c.page ?? "?"} 页相关内容`,
-            page: c.page ?? 0,
-            citationId: c.citation_id,
-            rank: c.rank,
-            snippet: c.snippet,
-          };
+            const newRef: Reference = {
+              id: currentReferencesRef.current.length + 1,
+              text: `第 ${c.page ?? "?"} 页相关内容`,
+              page: c.page ?? 0,
+              citationId: c.citation_id,
+              rank: c.rank,
+              snippet: c.snippet,
+            };
 
-          // 更新 state & ref
-          setCurrentReferences((prev) => [...prev, newRef]);
-          currentReferencesRef.current = [...currentReferencesRef.current, newRef];
-        },
-        // onDone
-        (meta: { used_retrieval: boolean }) => {
-          const finalResponse = currentResponseRef.current;
-          const finalRefs = [...currentReferencesRef.current];
+            // 更新 state & ref
+            setCurrentReferences((prev) => [...prev, newRef]);
+            currentReferencesRef.current = [...currentReferencesRef.current, newRef];
+          },
+          // onDone
+          (meta: { used_retrieval: boolean; medical_analysis?: any }) => {
+            const finalResponse = currentResponseRef.current;
+            const finalRefs = [...currentReferencesRef.current];
 
-          const assistantMessage: Message = {
-            id: (Date.now() + 1).toString(),
-            type: "assistant",
-            content: finalResponse || "_（空响应）_",
-            timestamp: new Date(),
-            references: finalRefs.length ? finalRefs : undefined,
-          };
+            const assistantMessage: Message = {
+              id: (Date.now() + 1).toString(),
+              type: "assistant",
+              content: finalResponse || "_（空响应）_",
+              timestamp: new Date(),
+              references: finalRefs.length ? finalRefs : undefined,
+            };
 
-          setMessages((prev) => [...prev, assistantMessage]);
-          setIsTyping(false);
-          setCurrentResponse("");
-          setCurrentReferences([]);
-          currentResponseRef.current = "";
-          currentReferencesRef.current = [];
-          citationIdsRef.current.clear();
+            setMessages((prev) => [...prev, assistantMessage]);
+            setIsTyping(false);
+            setCurrentResponse("");
+            setCurrentReferences([]);
+            currentResponseRef.current = "";
+            currentReferencesRef.current = [];
+            citationIdsRef.current.clear();
 
-          if (meta?.used_retrieval) {
-            toast.success("Response grounded by document context");
-          }
-          // 重新聚焦输入框
-          textareaRef.current?.focus();
-        },
-        // onError
-        (errText: string) => {
-          console.error("Chat error:", errText);
-          setIsTyping(false);
-          setCurrentResponse("");
-          setCurrentReferences([]);
-          currentResponseRef.current = "";
-          currentReferencesRef.current = [];
-          citationIdsRef.current.clear();
+            if (meta?.used_retrieval) {
+              toast.success("基于医疗文档提供回答");
+            }
+            if (meta?.medical_analysis) {
+              toast.info("已进行医疗安全分析");
+            }
+            // 重新聚焦输入框
+            textareaRef.current?.focus();
+          },
+          // onError
+          (errText: string) => {
+            console.error("Medical chat error:", errText);
+            setIsTyping(false);
+            setCurrentResponse("");
+            setCurrentReferences([]);
+            currentResponseRef.current = "";
+            currentReferencesRef.current = [];
+            citationIdsRef.current.clear();
 
-          const errorMessage: Message = {
-            id: (Date.now() + 1).toString(),
-            type: "assistant",
-            content: `抱歉，处理你的请求时出现错误：${errText}`,
-            timestamp: new Date(),
-          };
-          setMessages((prev) => [...prev, errorMessage]);
-          toast.error("Failed to get response");
-        },
-        // 传递 fileId & threadId
-        fileId,
-        threadId,
-      );
+            const errorMessage: Message = {
+              id: (Date.now() + 1).toString(),
+              type: "assistant",
+              content: `抱歉，处理您的医疗咨询时出现错误：${errText}`,
+              timestamp: new Date(),
+            };
+            setMessages((prev) => [...prev, errorMessage]);
+            toast.error("医疗咨询失败");
+          },
+          // sessionId
+          threadId,
+          // 医疗参数
+          "内科",  // department
+          "临床指南",  // documentType
+          "内分泌、营养和代谢疾病",  // diseaseCategory
+        );
+      } else {
+        // 使用普通聊天API
+        await processChatStream(
+          userText,
+          // onToken
+          (token: string) => {
+            setCurrentResponse((prev) => prev + token);
+            currentResponseRef.current += token;
+          },
+          // onCitation
+          (c: {
+            citation_id: string;
+            fileId: string;
+            rank: number;
+            page: number;
+            previewUrl: string;
+            snippet?: string;
+          }) => {
+            // 去重：按 citation_id
+            if (!c.citation_id || citationIdsRef.current.has(c.citation_id)) return;
+            citationIdsRef.current.add(c.citation_id);
+
+            const newRef: Reference = {
+              id: currentReferencesRef.current.length + 1,
+              text: `第 ${c.page ?? "?"} 页相关内容`,
+              page: c.page ?? 0,
+              citationId: c.citation_id,
+              rank: c.rank,
+              snippet: c.snippet,
+            };
+
+            // 更新 state & ref
+            setCurrentReferences((prev) => [...prev, newRef]);
+            currentReferencesRef.current = [...currentReferencesRef.current, newRef];
+          },
+          // onDone
+          (meta: { used_retrieval: boolean }) => {
+            const finalResponse = currentResponseRef.current;
+            const finalRefs = [...currentReferencesRef.current];
+
+            const assistantMessage: Message = {
+              id: (Date.now() + 1).toString(),
+              type: "assistant",
+              content: finalResponse || "_（空响应）_",
+              timestamp: new Date(),
+              references: finalRefs.length ? finalRefs : undefined,
+            };
+
+            setMessages((prev) => [...prev, assistantMessage]);
+            setIsTyping(false);
+            setCurrentResponse("");
+            setCurrentReferences([]);
+            currentResponseRef.current = "";
+            currentReferencesRef.current = [];
+            citationIdsRef.current.clear();
+
+            if (meta?.used_retrieval) {
+              toast.success("Response grounded by document context");
+            }
+            // 重新聚焦输入框
+            textareaRef.current?.focus();
+          },
+          // onError
+          (errText: string) => {
+            console.error("Chat error:", errText);
+            setIsTyping(false);
+            setCurrentResponse("");
+            setCurrentReferences([]);
+            currentResponseRef.current = "";
+            currentReferencesRef.current = [];
+            citationIdsRef.current.clear();
+
+            const errorMessage: Message = {
+              id: (Date.now() + 1).toString(),
+              type: "assistant",
+              content: `抱歉，处理你的请求时出现错误：${errText}`,
+              timestamp: new Date(),
+            };
+            setMessages((prev) => [...prev, errorMessage]);
+            toast.error("Failed to get response");
+          },
+          // 传递 fileId & threadId
+          fileId,
+          threadId,
+        );
+      }
     } catch (e) {
       console.error("Chat request failed:", e);
       setIsTyping(false);
@@ -217,7 +320,13 @@ export function ChatInterface({
   const clearChat = async () => {
     try {
       abortRef.current?.abort();
-      await clearSession(threadId);
+      
+      if (chatMode === "medical") {
+        await clearMedicalSession(threadId);
+      } else {
+        await clearSession(threadId);
+      }
+      
       setMessages([
         {
           id: "welcome",
@@ -250,35 +359,124 @@ export function ChatInterface({
     }
   };
 
+  // 切换聊天模式时重置聊天
+  const handleModeChange = (mode: ChatMode) => {
+    console.log("=== handleModeChange DEBUG ===");
+    console.log("Called with mode:", mode);
+    console.log("Current chatMode:", chatMode);
+    console.log("Are they different?", mode !== chatMode);
+    
+    if (mode !== chatMode) {
+      console.log("✅ Changing mode from", chatMode, "to", mode);
+      setChatMode(mode);
+      
+      // 添加延迟检查状态更新
+      setTimeout(() => {
+        console.log("🔍 State check after 100ms - chatMode should be:", mode);
+      }, 100);
+      
+      setMessages([
+        {
+          id: "welcome",
+          type: "assistant",
+          content: mode === "medical" 
+            ? "您好！我是您的医疗AI助手。我可以帮助您分析症状、提供医疗建议，并基于上传的医疗文档回答问题。请注意，我的建议仅供参考，不能替代专业医疗诊断。"
+            : "Hello! I'm your AI assistant. You can chat directly, and if you upload a PDF I can answer with document-grounded citations.",
+          timestamp: new Date(),
+        },
+      ]);
+      // 移除 onClearChat() 调用，因为它会重置整个组件
+      // onClearChat();
+      console.log("✅ Mode change completed");
+    } else {
+      console.log("⚠️ Mode is already", mode, "- no change needed");
+    }
+    console.log("=== END DEBUG ===");
+  };
+
   return (
     <div className="glass-panel-bright h-full flex flex-col max-h-full relative overflow-hidden">
       {/* 背景装饰 */}
-      <div className="absolute inset-0 opacity-5">
+      <div className="absolute inset-0 opacity-5 pointer-events-none">
         <div className="absolute inset-0 bg-gradient-to-br from-primary/20 via-transparent to-purple-500/20"></div>
       </div>
 
       {/* 头部 */}
-      <div className="relative p-6 border-b border-border/80 flex-shrink-0">
+      <div className="relative p-6 border-b border-border/80 flex-shrink-0 z-10">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-primary/15 border border-primary/30 shadow-lg">
-              <Sparkles className="w-5 h-5 text-primary" />
+            <div className={`p-2 rounded-lg border shadow-lg ${
+              chatMode === "medical" 
+                ? "bg-green-500/15 border-green-500/30" 
+                : "bg-primary/15 border-primary/30"
+            }`}>
+              {chatMode === "medical" ? (
+                <Stethoscope className="w-5 h-5 text-green-500" />
+              ) : (
+                <Sparkles className="w-5 h-5 text-primary" />
+              )}
             </div>
             <div>
-              <h2 className="elegant-title text-base">AI Assistant</h2>
+              <h2 className="elegant-title text-base">
+                {chatMode === "medical" ? "医疗AI助手" : "AI Assistant"}
+              </h2>
               <p className="text-xs text-muted-foreground/80 mt-1">
-                {fileId && fileName ? `Analyzing: ${fileName}` : "Powered by RAG Technology"}
+                {fileId && fileName ? `Analyzing: ${fileName}` : 
+                 chatMode === "medical" ? "医疗知识库支持" : "Powered by RAG Technology"}
               </p>
             </div>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={clearChat}
-            className="text-muted-foreground hover:text-white hover:bg-destructive/90 hover:border-destructive hover:shadow-lg hover:shadow-destructive/25 border border-border/60 transition-all duration-300 hover:scale-105 cursor-pointer"
-          >
-            Clear
-          </Button>
+          
+          <div className="flex items-center gap-3">
+            {/* 聊天模式选择器 */}
+            <div className="flex items-center gap-2 p-1 bg-secondary/40 rounded-lg border border-border/40 relative z-20">
+              <Button
+                variant={chatMode === "general" ? "default" : "ghost"}
+                size="sm"
+                onClick={(e) => {
+                  console.log("🔵 General button clicked", e);
+                  console.log("Current chatMode before click:", chatMode);
+                  handleModeChange("general");
+                }}
+                className={`text-xs px-3 py-1 h-7 transition-all duration-200 cursor-pointer ${
+                  chatMode === "general" 
+                    ? "bg-primary text-primary-foreground shadow-sm" 
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Sparkles className="w-3 h-3 mr-1" />
+                普通
+              </Button>
+              <Button
+                variant={chatMode === "medical" ? "default" : "ghost"}
+                size="sm"
+                onClick={(e) => {
+                  console.log("🟢 Medical button clicked", e);
+                  console.log("Current chatMode before click:", chatMode);
+                  console.log("Button variant will be:", chatMode === "medical" ? "default" : "ghost");
+                  console.log("Button className will include medical styles:", chatMode === "medical");
+                  handleModeChange("medical");
+                }}
+                className={`text-xs px-3 py-1 h-7 transition-all duration-200 cursor-pointer ${
+                  chatMode === "medical" 
+                    ? "bg-green-500 text-white shadow-sm hover:bg-green-600" 
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Stethoscope className="w-3 h-3 mr-1" />
+                医疗 {chatMode === "medical" ? "✅" : ""}
+              </Button>
+            </div>
+            
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={clearChat}
+              className="text-muted-foreground hover:text-white hover:bg-destructive/90 hover:border-destructive hover:shadow-lg hover:shadow-destructive/25 border border-border/60 transition-all duration-300 hover:scale-105 cursor-pointer"
+            >
+              Clear
+            </Button>
+          </div>
         </div>
       </div>
 

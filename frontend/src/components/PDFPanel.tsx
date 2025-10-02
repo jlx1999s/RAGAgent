@@ -3,6 +3,8 @@ import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { Progress } from "./ui/progress";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
+import { Label } from "./ui/label";
 import { 
   Upload, 
   FileText, 
@@ -12,9 +14,20 @@ import {
   CheckCircle2,
   Loader2,
   RefreshCw,
-  File
+  File,
+  Stethoscope
 } from "lucide-react";
-import { uploadPdf, startParse, getParseStatus, buildIndex, getPdfPageUrl } from "../services/api";
+import { 
+  uploadPdf, 
+  startParse, 
+  getParseStatus, 
+  buildIndex, 
+  getPdfPageUrl,
+  buildMedicalIndex,
+  getMedicalDepartments,
+  getDocumentTypes,
+  getDiseaseCategories
+} from "../services/api";
 import { toast } from "sonner";
 
 type UploadStatus = 'idle' | 'uploading' | 'parsing' | 'ready' | 'error';
@@ -32,8 +45,40 @@ export function PDFPanel({ className, onFileReady }: PDFPanelProps) {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [fileId, setFileId] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string>('');
+  const [indexType, setIndexType] = useState<'general' | 'medical'>('general');
+  const [department, setDepartment] = useState<string>('');
+  const [documentType, setDocumentType] = useState<string>('');
+  const [diseaseCategory, setDiseaseCategory] = useState<string>('');
+  const [departments, setDepartments] = useState<string[]>([]);
+  const [documentTypes, setDocumentTypes] = useState<string[]>([]);
+  const [diseaseCategories, setDiseaseCategories] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const statusCheckInterval = useRef<NodeJS.Timeout | null>(null);
+
+  // 加载医疗分类选项
+  useEffect(() => {
+    const loadMedicalOptions = async () => {
+      if (indexType === 'medical') {
+        try {
+          const [deptResponse, docTypeResponse, diseaseResponse] = await Promise.all([
+            getMedicalDepartments(),
+            getDocumentTypes(),
+            getDiseaseCategories()
+          ]);
+          setDepartments(deptResponse.departments || []);
+          setDocumentTypes(docTypeResponse.documentTypes || []);
+          setDiseaseCategories(diseaseResponse.diseaseCategories || []);
+        } catch (error) {
+          console.error('Failed to load medical options:', error);
+          // 提供默认选项
+          setDepartments(['内科', '外科', '儿科', '妇产科', '神经科', '心血管科']);
+          setDocumentTypes(['临床指南', '诊疗规范', '药物说明', '病例报告', '研究论文']);
+          setDiseaseCategories(['循环系统疾病', '呼吸系统疾病', '消化系统疾病', '神经系统疾病', '内分泌疾病']);
+        }
+      }
+    };
+    loadMedicalOptions();
+  }, [indexType]);
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -47,15 +92,17 @@ export function PDFPanel({ className, onFileReady }: PDFPanelProps) {
     setUploadProgress(0);
     setErrorMessage('');
 
+    let progressInterval: NodeJS.Timeout | null = null;
+
     try {
       // 模拟上传进度动画
-      const progressInterval = setInterval(() => {
+      progressInterval = setInterval(() => {
         setUploadProgress(prev => Math.min(prev + 15, 90));
       }, 200);
 
       // 上传PDF
       const uploadResponse = await uploadPdf(file);
-      clearInterval(progressInterval);
+      if (progressInterval) clearInterval(progressInterval);
       setUploadProgress(100);
       
       setFileId(uploadResponse.fileId);
@@ -81,7 +128,7 @@ export function PDFPanel({ className, onFileReady }: PDFPanelProps) {
         const mockFileId = `demo_${Date.now()}`;
         const mockPages = 8;
         
-        clearInterval(progressInterval);
+        if (progressInterval) clearInterval(progressInterval);
         setUploadProgress(100);
         setFileId(mockFileId);
         setTotalPages(mockPages);
@@ -132,8 +179,13 @@ export function PDFPanel({ className, onFileReady }: PDFPanelProps) {
           
           // 构建向量索引
           try {
-            await buildIndex(fileId);
-            toast.success('Document processed and indexed successfully');
+            if (indexType === 'medical') {
+              await buildMedicalIndex(fileId, department, documentType, diseaseCategory);
+              toast.success('Medical document processed and indexed successfully');
+            } else {
+              await buildIndex(fileId);
+              toast.success('Document processed and indexed successfully');
+            }
             onFileReady?.(fileId, fileName, totalPages);
           } catch (indexError) {
             console.error('Index build failed:', indexError);
@@ -265,13 +317,90 @@ export function PDFPanel({ className, onFileReady }: PDFPanelProps) {
           </Badge>
         </div>
 
+        {/* Index Type Selection */}
+        <div className="mb-4 space-y-3">
+          <div className="space-y-2">
+            <Label htmlFor="index-type" className="text-sm font-medium">Index Type</Label>
+            <Select value={indexType} onValueChange={(value: 'general' | 'medical') => setIndexType(value)}>
+              <SelectTrigger className="w-full">
+                <SelectValue placeholder="Select index type" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="general">
+                  <div className="flex items-center gap-2">
+                    <File className="w-4 h-4" />
+                    General Document
+                  </div>
+                </SelectItem>
+                <SelectItem value="medical">
+                  <div className="flex items-center gap-2">
+                    <Stethoscope className="w-4 h-4" />
+                    Medical Document
+                  </div>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Medical Classification Options */}
+          {indexType === 'medical' && (
+            <div className="space-y-3 p-3 bg-blue-50/50 border border-blue-200/50 rounded-lg">
+              <div className="space-y-2">
+                <Label htmlFor="department" className="text-sm font-medium">Department</Label>
+                <Select value={department} onValueChange={setDepartment}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Select department" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {departments.map((dept) => (
+                      <SelectItem key={dept} value={dept}>{dept}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="document-type" className="text-sm font-medium">Document Type</Label>
+                <Select value={documentType} onValueChange={setDocumentType}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Select document type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {documentTypes.map((type) => (
+                      <SelectItem key={type} value={type}>{type}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="disease-category" className="text-sm font-medium">Disease Category (Optional)</Label>
+                <Select value={diseaseCategory} onValueChange={setDiseaseCategory}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Select disease category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">None</SelectItem>
+                    {diseaseCategories.map((category) => (
+                      <SelectItem key={category} value={category}>{category}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          )}
+        </div>
+
         {uploadStatus === 'idle' ? (
           <Button 
             onClick={handleUploadClick} 
-            className="w-full bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white shadow-lg border border-green-500/30 rounded-xl transition-all duration-200 min-h-[48px] h-[48px] text-base font-medium cursor-pointer"
+            disabled={indexType === 'medical' && (!department || !documentType)}
+            className="w-full bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white shadow-lg border border-green-500/30 rounded-xl transition-all duration-200 min-h-[48px] h-[48px] text-base font-medium cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Upload className="w-5 h-5 mr-2 flex-shrink-0" />
-            <span className="flex-shrink-0">Upload PDF</span>
+            <span className="flex-shrink-0">
+              {indexType === 'medical' ? 'Upload Medical PDF' : 'Upload PDF'}
+            </span>
           </Button>
         ) : (
           <div className="flex gap-2">

@@ -245,7 +245,8 @@ class MedicalVectorStoreManager:
                 logger.error(f"在向量存储 {store_key} 中搜索失败: {e}")
         
         # 按分数排序并返回前k个结果
-        results.sort(key=lambda x: x[1], reverse=True)
+        # FAISS返回的是距离分数，距离越小表示越相似，所以使用升序排序
+        results.sort(key=lambda x: x[1], reverse=False)
         return results[:k]
     
     def get_store_statistics(self) -> Dict[str, Dict]:
