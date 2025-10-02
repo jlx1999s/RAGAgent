@@ -27,18 +27,25 @@ class DashScopeEmbeddings(Embeddings):
         dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
     
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        """嵌入文档列表"""
+        """嵌入文档列表，支持批处理以避免API限制"""
         try:
-            resp = dashscope.TextEmbedding.call(
-                model=self.model,
-                input=texts
-            )
+            all_embeddings = []
+            batch_size = 10  # DashScope API限制
             
-            if resp.status_code == HTTPStatus.OK:
-                embeddings = [record['embedding'] for record in resp.output['embeddings']]
-                return embeddings
-            else:
-                raise Exception(f"DashScope API error: {resp}")
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i:i + batch_size]
+                resp = dashscope.TextEmbedding.call(
+                    model=self.model,
+                    input=batch
+                )
+                
+                if resp.status_code == HTTPStatus.OK:
+                    batch_embeddings = [record['embedding'] for record in resp.output['embeddings']]
+                    all_embeddings.extend(batch_embeddings)
+                else:
+                    raise Exception(f"DashScope API error: {resp}")
+            
+            return all_embeddings
         except Exception as e:
             print(f"Error in embed_documents: {e}")
             raise e

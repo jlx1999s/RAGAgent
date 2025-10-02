@@ -25,8 +25,16 @@ from services.pdf_service import (
     original_pdf_path, dir_original_pages, dir_parsed_pages, markdown_output
 )
 from services.index_service import build_faiss_index, search_faiss
+from services.enhanced_index_service import enhanced_index_service, build_medical_index, search_medical_knowledge
+from services.enhanced_rag_service import (
+    enhanced_rag_service, medical_retrieve, medical_answer_stream,
+    get_history, append_history, clear_history
+)
+from services.medical_knowledge_graph import kg_service
+from services.medical_association_service import medical_association_service
 from fastapi.responses import StreamingResponse, JSONResponse
-from services.rag_service import retrieve, answer_stream, clear_history
+# 原始RAG服务保留用于兼容性
+from services.rag_service import retrieve, answer_stream
 
 app = FastAPI(
     title="九天老师公开课：多模态RAG系统API",
@@ -321,8 +329,451 @@ async def index_build(req: BuildIndexRequest):
 
 @app.post(f"{API_PREFIX}/index/search", tags=["Index"])
 async def index_search(req: SearchRequest):
-    out = search_faiss(req.fileId, req.query, req.k or 5)
-    if not out.get("ok"):
-        code = out.get("error", "INDEX_NOT_FOUND")
-        return JSONResponse(err(code, "请先构建索引"), status_code=400)
+    out = search_faiss(req.fileId, req.query, req.k)
     return out
+
+# ============== 医疗索引相关API ==============
+
+class MedicalIndexRequest(BaseModel):
+    fileId: str
+    department: str  # 医疗科室
+    documentType: str  # 文档类型
+    diseaseCategory: Optional[str] = None  # 疾病分类
+    customMetadata: Optional[Dict[str, Any]] = None  # 自定义元数据
+
+class MedicalSearchRequest(BaseModel):
+    query: str
+    k: Optional[int] = 10
+    department: Optional[str] = None
+    documentType: Optional[str] = None
+    diseaseCategory: Optional[str] = None
+    scoreThreshold: Optional[float] = 0.0
+
+class SymptomSearchRequest(BaseModel):
+    symptoms: List[str]
+    k: Optional[int] = 10
+
+class DrugSearchRequest(BaseModel):
+    drugName: str
+    k: Optional[int] = 10
+
+# 医疗RAG相关数据模型
+class MedicalChatRequest(BaseModel):
+    message: str
+    sessionId: Optional[str] = None
+    department: Optional[str] = None
+    documentType: Optional[str] = None
+    diseaseCategory: Optional[str] = None
+    enableSafetyCheck: Optional[bool] = True
+
+class SymptomAnalysisRequest(BaseModel):
+    symptoms: List[str]
+    sessionId: Optional[str] = None
+
+class DrugInteractionRequest(BaseModel):
+    drugs: List[str]
+    sessionId: Optional[str] = None
+
+# 知识图谱相关数据模型
+class EntitySearchRequest(BaseModel):
+    entityName: str
+
+class KnowledgeGraphUpdateRequest(BaseModel):
+    documents: List[str]
+
+# 医疗关联查询相关模型
+class AssociationSearchRequest(BaseModel):
+    query: str
+    associationTypes: Optional[List[str]] = None
+    confidenceThreshold: Optional[float] = 0.5
+    maxResults: Optional[int] = 20
+
+class EnhancedSymptomAnalysisRequest(BaseModel):
+    symptoms: List[str]
+    sessionId: Optional[str] = None
+    includeAssociations: Optional[bool] = True
+
+class EnhancedDrugInteractionRequest(BaseModel):
+    drugs: List[str]
+    sessionId: Optional[str] = None
+    includeAssociations: Optional[bool] = True
+
+@app.post(f"{API_PREFIX}/medical/index/build", tags=["Medical Index"])
+async def medical_index_build(req: MedicalIndexRequest):
+    """构建医疗文档索引"""
+    try:
+        result = build_medical_index(
+            file_id=req.fileId,
+            department=req.department,
+            document_type=req.documentType,
+            disease_category=req.diseaseCategory,
+            custom_metadata=req.customMetadata
+        )
+        return result
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+# 医疗关联查询API端点
+@app.post(f"{API_PREFIX}/medical/associations/search", tags=["Medical Associations"])
+async def search_medical_associations(req: AssociationSearchRequest):
+    """搜索医疗关联"""
+    try:
+        from services.medical_association_service import AssociationType
+        
+        # 转换关联类型
+        association_types = None
+        if req.associationTypes:
+            association_types = []
+            for type_str in req.associationTypes:
+                try:
+                    association_types.append(AssociationType(type_str))
+                except ValueError:
+                    continue
+        
+        result = medical_association_service.find_associations(
+            query=req.query,
+            association_types=association_types,
+            confidence_threshold=req.confidenceThreshold,
+            max_results=req.maxResults
+        )
+        
+        return {
+            "ok": True,
+            "query": result.query,
+            "total_count": result.total_count,
+            "confidence_threshold": result.confidence_threshold,
+            "associations": [
+                {
+                    "source": assoc.source,
+                    "target": assoc.target,
+                    "type": assoc.association_type.value,
+                    "confidence": assoc.confidence,
+                    "frequency": assoc.frequency,
+                    "evidence": assoc.evidence[:2] if assoc.evidence else []
+                }
+                for assoc in result.associations
+            ],
+            "search_metadata": result.search_metadata
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post(f"{API_PREFIX}/medical/analyze/symptoms-enhanced", tags=["Medical Associations"])
+async def analyze_symptoms_enhanced(req: EnhancedSymptomAnalysisRequest):
+    """增强症状分析（包含关联信息）"""
+    try:
+        result = await enhanced_rag_service.enhanced_symptom_analysis(req.symptoms)
+        
+        if result.get("success"):
+            return {
+                "ok": True,
+                "symptoms": req.symptoms,
+                "analysis": result.get("symptom_analysis", {}),
+                "citations": result.get("citations", []),
+                "context_text": result.get("context_text", ""),
+                "metadata": result.get("metadata", {})
+            }
+        else:
+            return {
+                "ok": False,
+                "error": result.get("error", "分析失败"),
+                "symptoms": req.symptoms
+            }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post(f"{API_PREFIX}/medical/analyze/drug-interactions-enhanced", tags=["Medical Associations"])
+async def analyze_drug_interactions_enhanced(req: EnhancedDrugInteractionRequest):
+    """增强药物相互作用分析（包含关联信息）"""
+    try:
+        result = await enhanced_rag_service.drug_interaction_search(req.drugs)
+        
+        if result.get("success"):
+            return {
+                "ok": True,
+                "drugs": req.drugs,
+                "analysis": result.get("drug_interaction_analysis", {}),
+                "citations": result.get("citations", []),
+                "context_text": result.get("context_text", ""),
+                "metadata": result.get("metadata", {})
+            }
+        else:
+            return {
+                "ok": False,
+                "error": result.get("error", "分析失败"),
+                "drugs": req.drugs
+            }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get(f"{API_PREFIX}/medical/associations/statistics", tags=["Medical Associations"])
+async def get_association_statistics():
+    """获取医疗关联统计信息"""
+    try:
+        stats = await medical_association_service.get_association_statistics()
+        return {
+            "ok": True,
+            "statistics": stats
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post(f"{API_PREFIX}/medical/associations/update", tags=["Medical Associations"])
+async def update_associations_from_documents(req: KnowledgeGraphUpdateRequest):
+    """从文档更新医疗关联知识库"""
+    try:
+        result = await medical_association_service.update_associations_from_documents(req.documents)
+        return {
+            "ok": True,
+            "update_result": result
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post(f"{API_PREFIX}/medical/search", tags=["Medical Search"])
+async def medical_search(req: MedicalSearchRequest):
+    """搜索医疗文档"""
+    try:
+        result = enhanced_index_service.search_medical_documents(
+            query=req.query,
+            k=req.k,
+            department=req.department,
+            document_type=req.documentType,
+            disease_category=req.diseaseCategory,
+            score_threshold=req.scoreThreshold
+        )
+        return result
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post(f"{API_PREFIX}/medical/search/symptoms", tags=["Medical Search"])
+async def medical_search_by_symptoms(req: SymptomSearchRequest):
+    """基于症状搜索相关疾病和治疗方案"""
+    try:
+        result = enhanced_index_service.search_by_symptoms(
+            symptoms=req.symptoms,
+            k=req.k
+        )
+        return result
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post(f"{API_PREFIX}/medical/search/drug", tags=["Medical Search"])
+async def medical_search_drug_interactions(req: DrugSearchRequest):
+    """搜索药物相互作用和副作用信息"""
+    try:
+        result = enhanced_index_service.search_drug_interactions(
+            drug_name=req.drugName,
+            k=req.k
+        )
+        return result
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get(f"{API_PREFIX}/medical/statistics", tags=["Medical Index"])
+async def medical_statistics():
+    """获取医疗向量存储统计信息"""
+    try:
+        result = enhanced_index_service.get_vector_store_statistics()
+        return result
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get(f"{API_PREFIX}/medical/departments", tags=["Medical Index"])
+async def get_medical_departments():
+    """获取支持的医疗科室列表"""
+    from services.medical_taxonomy import MedicalDepartment
+    return {
+        "ok": True,
+        "departments": [dept.value for dept in MedicalDepartment]
+    }
+
+@app.get(f"{API_PREFIX}/medical/document-types", tags=["Medical Index"])
+async def get_document_types():
+    """获取支持的文档类型列表"""
+    from services.medical_taxonomy import DocumentType
+    return {
+        "ok": True,
+        "document_types": [doc_type.value for doc_type in DocumentType]
+    }
+
+@app.get(f"{API_PREFIX}/medical/disease-categories", tags=["Medical Index"])
+async def get_disease_categories():
+    """获取支持的疾病分类列表"""
+    from services.medical_taxonomy import DiseaseCategory
+    return {
+        "ok": True,
+        "disease_categories": [category.value for category in DiseaseCategory]
+    }
+
+class DeleteIndexRequest(BaseModel):
+    department: str
+    documentType: str
+    diseaseCategory: Optional[str] = None
+
+@app.post(f"{API_PREFIX}/medical/index/delete", tags=["Medical Index"])
+async def medical_index_delete(req: DeleteIndexRequest):
+    """删除指定的医疗文档索引"""
+    try:
+        result = enhanced_index_service.delete_document_index(
+            department=req.department,
+            document_type=req.documentType,
+            disease_category=req.diseaseCategory
+        )
+        return result
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post(f"{API_PREFIX}/medical/index/optimize", tags=["Medical Index"])
+async def medical_index_optimize():
+    """优化医疗向量存储"""
+    try:
+        result = enhanced_index_service.optimize_vector_stores()
+        return result
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+# ============== 医疗RAG端点 ==============
+
+@app.post(f"{API_PREFIX}/medical/chat", tags=["Medical RAG"])
+async def medical_chat_stream(req: MedicalChatRequest):
+    """
+    医疗问答聊天（SSE流式）
+    集成安全审核和质量评估
+    """
+    async def gen():
+        try:
+            question = (req.message or "").strip()
+            session_id = (req.sessionId or "medical_default").strip()
+            
+            # 直接使用字符串参数，不进行枚举转换
+            department = req.department
+            document_type = req.documentType
+            disease_category = req.diseaseCategory
+            
+            if not question:
+                yield f"data: {json.dumps({'type': 'error', 'data': {'message': '问题不能为空'}})}\n\n"
+                return
+            
+            # 医疗检索
+            citations, context_text, metadata = await medical_retrieve(
+                question=question,
+                department=department,
+                document_type=document_type,
+                disease_category=disease_category
+            )
+            
+            # 将引用存储到全局字典中，以便 /pdf/chunk 端点可以访问
+            if citations:
+                for c in citations:
+                    citation_id = c.get("citation_id")
+                    if citation_id:
+                        globals()["citations"][citation_id] = c
+            
+            # 流式生成回答
+            async for event in medical_answer_stream(
+                question=question,
+                citations=citations,
+                context_text=context_text,
+                metadata=metadata,
+                session_id=session_id,
+                enable_safety_check=req.enableSafetyCheck
+            ):
+                yield f"data: {json.dumps(event)}\n\n"
+                
+        except Exception as e:
+            print(f"[ERROR] medical_chat_stream: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(e)}})}\n\n"
+    
+    return StreamingResponse(gen(), media_type="text/plain; charset=utf-8")
+
+@app.post(f"{API_PREFIX}/medical/chat/clear", tags=["Medical RAG"])
+async def medical_chat_clear(req: ClearChatRequest):
+    """清除医疗聊天历史"""
+    try:
+        session_id = (req.sessionId or "medical_default").strip()
+        clear_history(session_id)
+        return {"ok": True, "message": f"Medical chat history cleared for session: {session_id}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post(f"{API_PREFIX}/medical/analyze/symptoms", tags=["Medical RAG"])
+async def analyze_symptoms(req: SymptomAnalysisRequest):
+    """症状分析和疾病推荐"""
+    try:
+        if not req.symptoms:
+            return {"ok": False, "error": "症状列表不能为空"}
+        
+        result = await enhanced_rag_service.symptom_based_search(req.symptoms)
+        return {"ok": True, "data": result}
+        
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post(f"{API_PREFIX}/medical/analyze/drug-interactions", tags=["Medical RAG"])
+async def analyze_drug_interactions(req: DrugInteractionRequest):
+    """药物相互作用分析"""
+    try:
+        if not req.drugs:
+            return {"ok": False, "error": "药物列表不能为空"}
+        
+        result = await enhanced_rag_service.drug_interaction_search(req.drugs)
+        return {"ok": True, "data": result}
+        
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get(f"{API_PREFIX}/medical/chat/history", tags=["Medical RAG"])
+async def get_medical_chat_history(sessionId: str = Query("medical_default")):
+    """获取医疗聊天历史"""
+    try:
+        history = get_history(sessionId)
+        return {"ok": True, "data": {"sessionId": sessionId, "history": history}}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get(f"{API_PREFIX}/medical/safety/review-stats", tags=["Medical RAG"])
+async def get_safety_review_stats():
+    """获取安全审核统计信息"""
+    try:
+        stats = await enhanced_rag_service.review_service.get_review_statistics()
+        return {"ok": True, "data": stats}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+# 知识图谱相关API端点
+@app.post(f"{API_PREFIX}/knowledge-graph/entity/search", tags=["Knowledge Graph"])
+async def search_entity_relationships(req: EntitySearchRequest):
+    """查找实体关系"""
+    try:
+        relationships = await kg_service.find_entity_relationships(req.entityName)
+        return {"ok": True, "data": relationships}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get(f"{API_PREFIX}/knowledge-graph/statistics", tags=["Knowledge Graph"])
+async def get_knowledge_graph_statistics():
+    """获取知识图谱统计信息"""
+    try:
+        stats = await kg_service.get_knowledge_graph_stats()
+        return {"ok": True, "data": stats}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post(f"{API_PREFIX}/knowledge-graph/update", tags=["Knowledge Graph"])
+async def update_knowledge_graph(req: KnowledgeGraphUpdateRequest):
+    """从文档更新知识图谱"""
+    try:
+        result = await kg_service.update_kg_from_documents(req.documents)
+        return {"ok": True, "data": result}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post(f"{API_PREFIX}/knowledge-graph/enhance-query", tags=["Knowledge Graph"])
+async def enhance_query_with_kg(req: ChatRequest):
+    """使用知识图谱增强查询"""
+    try:
+        enhancement = await kg_service.enhance_query_with_kg(req.message)
+        return {"ok": True, "data": enhancement}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
