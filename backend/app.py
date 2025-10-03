@@ -32,6 +32,10 @@ from services.enhanced_rag_service import (
 )
 from services.medical_knowledge_graph import kg_service
 from services.medical_association_service import medical_association_service
+from services.medical_intent_service import recognize_medical_intent
+from services.qwen_intent_service import recognize_qwen_medical_intent
+from services.smart_intent_service import recognize_smart_medical_intent
+from services.medical_taxonomy import MedicalDepartment, DocumentType, DiseaseCategory
 from fastapi.responses import StreamingResponse, JSONResponse
 # 原始RAG服务保留用于兼容性
 from services.rag_service import retrieve, answer_stream
@@ -340,6 +344,7 @@ class MedicalIndexRequest(BaseModel):
     documentType: str  # 文档类型
     diseaseCategory: Optional[str] = None  # 疾病分类
     customMetadata: Optional[Dict[str, Any]] = None  # 自定义元数据
+    markdownContent: Optional[str] = None  # 直接传递的markdown内容
 
 class MedicalSearchRequest(BaseModel):
     query: str
@@ -365,6 +370,7 @@ class MedicalChatRequest(BaseModel):
     documentType: Optional[str] = None
     diseaseCategory: Optional[str] = None
     enableSafetyCheck: Optional[bool] = True
+    intentRecognitionMethod: Optional[str] = "smart"  # "smart", "qwen" 或 "keyword"
 
 class SymptomAnalysisRequest(BaseModel):
     symptoms: List[str]
@@ -402,6 +408,20 @@ class EnhancedDrugInteractionRequest(BaseModel):
 async def medical_index_build(req: MedicalIndexRequest):
     """构建医疗文档索引"""
     try:
+        # 如果提供了markdown内容，先保存到文件
+        if req.markdownContent:
+            from services.index_service import DATA_ROOT
+            import os
+            
+            # 创建文件目录
+            file_dir = os.path.join(DATA_ROOT, req.fileId)
+            os.makedirs(file_dir, exist_ok=True)
+            
+            # 保存markdown内容到output.md
+            markdown_file = os.path.join(file_dir, "output.md")
+            with open(markdown_file, 'w', encoding='utf-8') as f:
+                f.write(req.markdownContent)
+        
         result = build_medical_index(
             file_id=req.fileId,
             department=req.department,
@@ -646,21 +666,122 @@ async def medical_chat_stream(req: MedicalChatRequest):
             question = (req.message or "").strip()
             session_id = (req.sessionId or "medical_default").strip()
             
-            # 直接使用字符串参数，不进行枚举转换
-            department = req.department
-            document_type = req.documentType
-            disease_category = req.diseaseCategory
-            
             if not question:
                 yield f"data: {json.dumps({'type': 'error', 'data': {'message': '问题不能为空'}})}\n\n"
                 return
             
+            # 智能意图识别：如果用户没有指定参数，则自动推断
+            if not req.department and not req.documentType and not req.diseaseCategory:
+                # 根据用户选择的方法进行意图识别
+                intent_method = req.intentRecognitionMethod or "smart"
+                
+                if intent_method == "smart":
+                    # 使用智能意图识别（推荐）
+                    intent = recognize_smart_medical_intent(question)
+                    department = intent.get('department')
+                    document_type = intent.get('document_type')
+                    disease_category = intent.get('disease_category')
+                    confidence = intent.get('confidence', 0.0)
+                    reasoning = intent.get('reasoning', '')
+                    method = intent.get('method', intent_method)
+                elif intent_method == "qwen":
+                    # 使用原始Qwen意图识别
+                    intent = recognize_qwen_medical_intent(question)
+                    department = intent.get('department')
+                    document_type = intent.get('document_type')
+                    disease_category = intent.get('disease_category')
+                    confidence = intent.get('confidence', 0.0)
+                    reasoning = intent.get('reasoning', '')
+                    method = intent.get('method', intent_method)
+                else:
+                    # 使用关键词意图识别
+                    intent = recognize_medical_intent(question)
+                    department = intent.department
+                    document_type = intent.document_type
+                    disease_category = intent.disease_category
+                    confidence = intent.confidence
+                    reasoning = intent.reasoning
+                    method = "keyword"
+                
+                # 发送意图识别结果
+                intent_data = {
+                    'department': department, 
+                    'document_type': document_type, 
+                    'disease_category': disease_category, 
+                    'confidence': confidence, 
+                    'reasoning': reasoning,
+                    'method': method
+                }
+                yield f"data: {json.dumps({'type': 'intent_recognition', 'data': intent_data})}\n\n"
+            else:
+                # 使用用户指定的参数
+                department = req.department
+                document_type = req.documentType
+                disease_category = req.diseaseCategory
+            
+            # 类型转换：将字符串转换为枚举类型
+            department_enum = None
+            document_type_enum = None
+            disease_category_enum = None
+            
+            # 科室映射和转换
+            if department:
+                try:
+                    # 科室映射 - 基于实际文档分布进行映射
+                    department_mapping = {
+                        "呼吸内科": "呼吸科",
+                        "心内科": "心血管科",
+                        "消化内科": "消化科",
+                        "内分泌内科": "内分泌科",
+                        "肾脏内科": "肾内科",
+                        "预防科": "内科",
+                        "保健科": "内科"
+                    }
+                    
+                    # 使用智能意图识别的结果，不再进行硬编码映射
+                    mapped_dept = department_mapping.get(department, department)
+                    department_enum = MedicalDepartment(mapped_dept)
+                except ValueError:
+                    print(f"[WARNING] 无效的科室参数: {department}")
+                    department_enum = None
+            
+            # 文档类型映射和转换
+            if document_type:
+                try:
+                    # 文档类型映射
+                    doctype_mapping = {
+                        "预防指南": "临床指南",
+                        "诊疗指南": "临床指南",
+                        "治疗指南": "临床指南",
+                        "护理规范": "护理手册",
+                        "康复指导": "护理手册",
+                        "急救指南": "急救流程",
+                        "保健指南": "临床指南",
+                        "健康指南": "临床指南"
+                    }
+                    mapped_doctype = doctype_mapping.get(document_type, document_type)
+                    document_type_enum = DocumentType(mapped_doctype)
+                except ValueError:
+                    print(f"[WARNING] 无效的文档类型参数: {document_type}")
+                    document_type_enum = None
+            
+            # 疾病分类映射和转换
+            if disease_category:
+                try:
+                    # 疾病类别映射 - 修复错误的映射逻辑
+                    # 注意：向量存储的实际结构是 呼吸科_临床指南_感染性疾病
+                    # 所以不应该将"感染性疾病"映射为其他类别
+                    disease_category_enum = DiseaseCategory(disease_category)
+                except ValueError:
+                    print(f"[WARNING] 无效的疾病分类参数: {disease_category}")
+                    disease_category_enum = None
+            
             # 医疗检索
             citations, context_text, metadata = await medical_retrieve(
                 question=question,
-                department=department,
-                document_type=document_type,
-                disease_category=disease_category
+                department=department_enum,
+                document_type=document_type_enum,
+                disease_category=disease_category_enum
             )
             
             # 将引用存储到全局字典中，以便 /pdf/chunk 端点可以访问

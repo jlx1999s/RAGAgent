@@ -25,7 +25,7 @@ class EnhancedMedicalIndexService:
     """增强的医疗索引服务"""
     
     def __init__(self, 
-                 vector_store_base_path: str = "backend/data/medical_vector_stores",
+                 vector_store_base_path: str = "data/vector_stores",
                  embeddings: Optional[Embeddings] = None):
         
         # 初始化组件
@@ -38,7 +38,7 @@ class EnhancedMedicalIndexService:
         self.preprocessor = MedicalDocumentPreprocessor()
         
         # 创建数据目录
-        self.data_root = Path("backend/data")
+        self.data_root = Path("data")
         self.data_root.mkdir(parents=True, exist_ok=True)
         
         logger.info("增强医疗索引服务初始化完成")

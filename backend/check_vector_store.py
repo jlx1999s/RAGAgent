@@ -99,7 +99,7 @@ def check_vector_store(store_path):
 
 def main():
     """主函数"""
-    base_path = Path("/Users/jinlingxiao/Downloads/RAGAgent/backend/backend/data/medical_vector_stores")
+    base_path = Path("/Users/jinlingxiao/Downloads/RAGAgent/backend/data/vector_stores")
     
     if not base_path.exists():
         print(f"向量存储目录不存在: {base_path}")

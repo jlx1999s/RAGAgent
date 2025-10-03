@@ -34,7 +34,7 @@ class MedicalVectorStoreManager:
     """医疗分层向量存储管理器"""
     
     def __init__(self, 
-                 base_path: str = "backend/data/vector_stores",
+                 base_path: str = "data/vector_stores",
                  embeddings: Optional[Embeddings] = None):
         self.base_path = Path(base_path)
         self.base_path.mkdir(parents=True, exist_ok=True)

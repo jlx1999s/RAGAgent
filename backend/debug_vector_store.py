@@ -21,7 +21,7 @@ def debug_vector_store():
     embeddings = load_embeddings()
     
     # 初始化向量存储管理器
-    base_path = "backend/data/medical_vector_stores"
+    base_path = "data/vector_stores"
     manager = MedicalVectorStoreManager(base_path=base_path, embeddings=embeddings)
     
     print(f"向量存储基础路径: {manager.base_path}")
