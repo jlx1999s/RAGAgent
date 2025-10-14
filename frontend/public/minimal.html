@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <title>极简医疗流式对接</title>
+  </head>
+  <body>
+    <h1>极简医疗流式对接（POST SSE）</h1>
+
+    <div>
+      <label>API Base URL：<input id="baseUrl" value="http://localhost:8001/api/v1"></label>
+    </div>
+    <div>
+      <label>Session ID：<input id="sessionId" value="demo_html_session"></label>
+    </div>
+    <div>
+      <label>启用安全检查：<input type="checkbox" id="enableSafetyCheck" checked></label>
+    </div>
+    <div>
+      <label>问题：</label><br>
+      <textarea id="message">患者长期血压维持在140/90，如何管理与用药？</textarea>
+    </div>
+
+    <div>
+      <button id="startBtn">开始流式</button>
+      <button id="abortBtn">取消</button>
+      <button id="clearBtn">清空会话</button>
+      <button id="qaBtn">非流式医疗问答</button>
+    </div>
+
+    <div>
+      <div id="status">状态：idle</div>
+      <div id="error"></div>
+      <pre id="output"></pre>
+    </div>
+
+    <script>
+      var abortController = null;
+
+      function $(id){ return document.getElementById(id); }
+      function setStatus(s){ $('status').textContent = '状态：' + s; }
+      function setError(e){ $('error').textContent = e || ''; }
+      function appendOutput(t){ $('output').textContent += t; }
+
+      async function startStreaming(){
+        var baseUrl = $('baseUrl').value.trim();
+        var sessionId = $('sessionId').value.trim();
+        var message = $('message').value.trim();
+        var enableSafetyCheck = $('enableSafetyCheck').checked;
+
+        if(!baseUrl || !sessionId || !message){
+          setError('请填写 Base URL、Session ID 和问题');
+          return;
+        }
+
+        $('output').textContent = '';
+        setStatus('streaming');
+        setError('');
+
+        abortController = new AbortController();
+
+        try{
+          var resp = await fetch(baseUrl + '/medical/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: message, sessionId: sessionId, enableSafetyCheck: enableSafetyCheck }),
+            signal: abortController.signal
+          });
+
+          if(!resp.ok){
+            throw new Error('HTTP ' + resp.status + ' ' + resp.statusText);
+          }
+
+          var reader = resp.body && resp.body.getReader ? resp.body.getReader() : null;
+          if(!reader) throw new Error('No response body');
+
+          var decoder = new TextDecoder();
+          var buffer = '';
+
+          while(true){
+            var chunk = await reader.read();
+            if(chunk.done) break;
+            buffer += decoder.decode(chunk.value, { stream: true });
+            var lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            for(var i=0;i<lines.length;i++){
+              var line = lines[i];
+              if(line.startsWith('data: ')){
+                try{
+                  var evt = JSON.parse(line.slice(6));
+                  if(evt.type === 'token'){
+                    appendOutput(evt.data);
+                  }else if(evt.type === 'done'){
+                    setStatus('done');
+                    return;
+                  }else if(evt.type === 'error'){
+                    setError(typeof evt.data === 'string' ? evt.data : JSON.stringify(evt.data));
+                    setStatus('error');
+                    return;
+                  }
+                }catch(e){
+                  // 忽略解析错误
+                }
+              }
+            }
+          }
+          setStatus('done');
+        }catch(e){
+          if(e && e.name === 'AbortError'){ setStatus('idle'); return; }
+          setError(e.message || String(e));
+          setStatus('error');
+        }
+      }
+
+      async function clearSession(){
+        var baseUrl = $('baseUrl').value.trim();
+        var sessionId = $('sessionId').value.trim();
+        if(!baseUrl || !sessionId){ setError('请填写 Base URL 和 Session ID'); return; }
+        try{
+          var resp = await fetch(baseUrl + '/medical/chat/clear', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: sessionId })
+          });
+          if(!resp.ok) throw new Error('HTTP ' + resp.status + ' ' + resp.statusText);
+          $('output').textContent = '';
+          setStatus('idle');
+          setError('');
+        }catch(e){
+          setError(e.message || String(e));
+        }
+      }
+
+      async function medicalQA(){
+        var baseUrl = $('baseUrl').value.trim();
+        var sessionId = $('sessionId').value.trim();
+        var message = $('message').value.trim();
+        var enableSafetyCheck = $('enableSafetyCheck').checked;
+        if(!baseUrl || !sessionId || !message){ setError('请填写 Base URL、Session ID 和问题'); return; }
+        $('output').textContent = '';
+        setError('');
+        setStatus('qa_request');
+        try{
+          var resp = await fetch(baseUrl + '/medical/qa', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: message, sessionId: sessionId, enableSafetyCheck: enableSafetyCheck })
+          });
+          if(!resp.ok) throw new Error('HTTP ' + resp.status + ' ' + resp.statusText);
+          var data = await resp.json();
+          $('output').textContent = JSON.stringify(data, null, 2);
+          setStatus('qa_done');
+        }catch(e){
+          setError(e.message || String(e));
+          setStatus('error');
+        }
+      }
+
+      $('startBtn').addEventListener('click', startStreaming);
+      $('abortBtn').addEventListener('click', function(){ if(abortController) abortController.abort(); setStatus('idle'); });
+      $('clearBtn').addEventListener('click', clearSession);
+      $('qaBtn').addEventListener('click', medicalQA);
+    </script>
+  </body>
+  </html>

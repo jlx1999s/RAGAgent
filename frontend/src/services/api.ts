@@ -1,5 +1,5 @@
 // API服务层 - 处理所有后端API调用
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8001/api/v1';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8002/api/v1';
 
 export interface PdfUploadResponse {
   fileId: string;
@@ -56,6 +56,160 @@ export async function uploadPdf(file: File, replace = true): Promise<PdfUploadRe
 
   if (!response.ok) {
     throw new Error(`Upload failed: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+// ==================== 知识库管理 API ====================
+
+// 删除知识库索引
+export async function deleteMedicalIndex(
+  department: string,
+  documentType: string,
+  diseaseCategory?: string
+): Promise<{
+  ok: boolean;
+  message: string;
+}> {
+  const response = await fetch(`${API_BASE_URL}/medical/index/delete`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      department,
+      documentType,
+      diseaseCategory,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Delete medical index failed: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+// 获取知识库详细信息
+export async function getKnowledgeBaseDetails(): Promise<{
+  ok: boolean;
+  stores: Array<{
+    id: string;
+    department: string;
+    document_type: string;
+    disease_category: string | null;
+    document_count: number;
+    created_at: string;
+    last_updated: string;
+    is_loaded: boolean;
+    file_size?: number;
+    index_size?: number;
+  }>;
+}> {
+  const response = await fetch(`${API_BASE_URL}/medical/statistics`);
+  
+  if (!response.ok) {
+    throw new Error(`Get knowledge base details failed: ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  
+  // 转换数据格式为管理页面需要的格式
+  const stores = Object.entries(data.store_details || {}).map(([id, details]: [string, any]) => ({
+    id,
+    department: details.department,
+    document_type: details.document_type,
+    disease_category: details.disease_category,
+    document_count: details.document_count,
+    created_at: details.created_at,
+    last_updated: details.last_updated,
+    is_loaded: details.is_loaded,
+    file_size: details.file_size,
+    index_size: details.index_size,
+  }));
+
+  return {
+    ok: data.ok,
+    stores,
+  };
+}
+
+// 重建知识库索引
+export async function rebuildMedicalIndex(
+  department: string,
+  documentType: string,
+  diseaseCategory?: string
+): Promise<{
+  ok: boolean;
+  chunks: number;
+  message: string;
+}> {
+  // 先删除现有索引
+  await deleteMedicalIndex(department, documentType, diseaseCategory);
+  
+  // 重新构建索引 - 这里需要文件ID，实际实现中可能需要从后端获取
+  // 暂时返回模拟数据，实际需要后端提供重建接口
+  const response = await fetch(`${API_BASE_URL}/medical/index/rebuild`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      department,
+      documentType,
+      diseaseCategory,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Rebuild medical index failed: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+// 优化知识库存储
+export async function optimizeKnowledgeBase(): Promise<{
+  ok: boolean;
+  message: string;
+  optimized_stores: number;
+}> {
+  const response = await fetch(`${API_BASE_URL}/medical/optimize`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Optimize knowledge base failed: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+// 获取医疗知识库统计信息
+export async function getMedicalStatistics(): Promise<{
+  ok: boolean;
+  total_stores: number;
+  total_documents: number;
+  departments: string[];
+  document_types: string[];
+  store_details: Record<string, {
+    department: string;
+    document_type: string;
+    disease_category: string | null;
+    document_count: number;
+    created_at: string;
+    last_updated: string;
+    is_loaded: boolean;
+  }>;
+}> {
+  const response = await fetch(`${API_BASE_URL}/medical/statistics`);
+  
+  if (!response.ok) {
+    throw new Error(`Get medical statistics failed: ${response.statusText}`);
   }
 
   return response.json();
@@ -284,7 +438,7 @@ function processDocument(content) {
 - **Reference citations**: This would normally include citations like [1] and [2] when connected to a real backend
 - **Streaming responses**: Text appears progressively as it would from the AI
 
-To see the full functionality, please start the backend server at \`localhost:8001\` and upload a PDF document.`;
+To see the full functionality, please start the backend server at \`localhost:8002\` and upload a PDF document.`;
 
       // 模拟流式响应
       const words = mockResponse.split(' ');
@@ -380,7 +534,8 @@ export async function buildMedicalIndex(
   department: string,
   documentType: string,
   diseaseCategory?: string,
-  customMetadata?: Record<string, any>
+  customMetadata?: Record<string, any>,
+  markdownContent?: string
 ): Promise<{
   ok: boolean;
   chunks: number;
@@ -399,6 +554,7 @@ export async function buildMedicalIndex(
       documentType,
       diseaseCategory,
       customMetadata,
+      markdownContent,
     }),
   });
 
@@ -483,6 +639,8 @@ export async function processMedicalChatStream(
     previewUrl: string;
     snippet?: string;
   }) => void,
+  // 新增：元数据事件（包含知识图谱增强内容）
+  onMetadata: (metadata: Record<string, any>) => void,
   onDone: (data: { used_retrieval: boolean; safety_checked?: boolean }) => void,
   onError: (error: string) => void,
   sessionId = 'medical_default',
@@ -539,6 +697,8 @@ export async function processMedicalChatStream(
               onToken(data.data);
             } else if (data.type === 'citation') {
               onCitation(data.data);
+            } else if (data.type === 'metadata') {
+              onMetadata(data.data);
             } else if (data.type === 'done') {
               onDone(data.data);
               return;

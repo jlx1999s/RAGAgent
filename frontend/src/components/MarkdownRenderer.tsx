@@ -8,8 +8,8 @@ import { FileText, ExternalLink } from "lucide-react";
 import { getCitationChunk } from "../services/api";
 
 /** 可改成从 .env 读取 */
-const API_BASE = "http://localhost:8001/api/v1";
-const API_HOST = String(API_BASE).replace(/\/api\/v\d+$/, ""); // http://localhost:8001
+const API_BASE = "http://localhost:8002/api/v1";
+const API_HOST = String(API_BASE).replace(/\/api\/v\d+$/, ""); // http://localhost:8002
 // ⭐ 允许 <img> 的自定义 schema（在组件外或组件内 useMemo 都可）
 const sanitizeSchema = {
   ...defaultSchema,

@@ -33,7 +33,7 @@ npm run start
 
 ### 后端API端口配置
 
-目前前端默认连接到后端API地址：`http://localhost:8001/api/v1`
+目前前端默认连接到后端API地址：`http://localhost:8002/api/v1`
 
 您可以通过以下方式修改后端连接地址：
 
@@ -43,7 +43,7 @@ npm run start
 
 ```bash
 # .env.local
-VITE_API_BASE_URL=http://localhost:8001/api/v1
+VITE_API_BASE_URL=http://localhost:8002/api/v1
 
 # 如果您的后端运行在不同端口，修改为：
 # VITE_API_BASE_URL=http://localhost:8080/api/v1
@@ -61,7 +61,7 @@ const API_BASE_URL = 'http://localhost:8080/api/v1'; // 您的后端地址
 
 ### 常见后端端口配置
 
-- **FastAPI开发服务器**: 通常使用 `8000` 或 `8001` 端口
+- **FastAPI开发服务器**: 通常使用 `8000` 或 `8002` 端口
 - **Flask开发服务器**: 通常使用 `5000` 端口  
 - **Express/Node.js**: 通常使用 `3001` 或 `8080` 端口
 - **生产环境**: 通常使用 `80` (HTTP) 或 `443` (HTTPS) 端口
@@ -183,7 +183,7 @@ export async function yourNewApiCall(): Promise<YourResponse> {
 
 ```bash
 # .env.local
-VITE_API_BASE_URL=http://localhost:8001/api/v1  # 后端API地址
+VITE_API_BASE_URL=http://localhost:8002/api/v1  # 后端API地址
 VITE_APP_TITLE=多模态RAG检索系统                  # 应用标题（可选）
 ```
 

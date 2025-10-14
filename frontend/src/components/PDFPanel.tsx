@@ -30,7 +30,7 @@ import {
 } from "../services/api";
 import { toast } from "sonner";
 
-type UploadStatus = 'idle' | 'uploading' | 'parsing' | 'ready' | 'error';
+type UploadStatus = 'idle' | 'uploading' | 'parsing' | 'ready' | 'indexed' | 'error';
 
 interface PDFPanelProps {
   className?: string;
@@ -186,10 +186,13 @@ export function PDFPanel({ className, onFileReady }: PDFPanelProps) {
               await buildIndex(fileId);
               toast.success('Document processed and indexed successfully');
             }
+            setUploadStatus('indexed');
             onFileReady?.(fileId, fileName, totalPages);
           } catch (indexError) {
             console.error('Index build failed:', indexError);
             toast.error('Document processed but indexing failed');
+            setUploadStatus('error');
+            setErrorMessage('Indexing failed');
           }
         } else if (status.status === 'error') {
           setUploadStatus('error');
@@ -255,6 +258,8 @@ export function PDFPanel({ className, onFileReady }: PDFPanelProps) {
       case 'parsing':
         return <Loader2 className="w-4 h-4 animate-spin" />;
       case 'ready':
+        return <CheckCircle2 className="w-4 h-4 text-blue-500" />;
+      case 'indexed':
         return <CheckCircle2 className="w-4 h-4 text-green-500" />;
       case 'error':
         return <AlertCircle className="w-4 h-4 text-red-500" />;
@@ -270,7 +275,9 @@ export function PDFPanel({ className, onFileReady }: PDFPanelProps) {
       case 'parsing':
         return 'Parsing document...';
       case 'ready':
-        return 'Ready';
+        return 'Ready for indexing';
+      case 'indexed':
+        return 'Indexed';
       case 'error':
         return 'Error';
       default:
@@ -281,6 +288,8 @@ export function PDFPanel({ className, onFileReady }: PDFPanelProps) {
   const getStatusVariant = (): "default" | "secondary" | "destructive" | "outline" => {
     switch (uploadStatus) {
       case 'ready':
+        return 'secondary';
+      case 'indexed':
         return 'default';
       case 'error':
         return 'destructive';
@@ -445,7 +454,7 @@ export function PDFPanel({ className, onFileReady }: PDFPanelProps) {
       </div>
 
       {/* Content */}
-      {uploadStatus === 'ready' ? (
+      {(uploadStatus === 'ready' || uploadStatus === 'indexed') ? (
         <div className="flex-1 flex flex-col relative min-h-0">
           {/* Tabs - 修复超出问题 */}
           <Tabs defaultValue="original" className="flex-1 flex flex-col min-h-0">

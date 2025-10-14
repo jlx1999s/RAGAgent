@@ -808,6 +808,170 @@ async def medical_chat_stream(req: MedicalChatRequest):
     
     return StreamingResponse(gen(), media_type="text/plain; charset=utf-8")
 
+@app.post(f"{API_PREFIX}/medical/qa", tags=["Medical RAG"])
+async def medical_qa(req: MedicalChatRequest):
+    """
+    医疗问答（非流式，JSON返回），用于生产前端“慢病管理系统”对接。
+    - 入参与流式 MedicalChatRequest 相同（可自动意图识别）。
+    - 返回完整答案、引用、检索元数据、质量/安全评估与使用检索标记。
+    """
+    try:
+        question = (req.message or "").strip()
+        session_id = (req.sessionId or "medical_default").strip()
+
+        if not question:
+            return {"ok": False, "error": "问题不能为空"}
+
+        # 智能意图识别（当未显式指定department/documentType/diseaseCategory时）
+        intent_result = None
+        if not req.department and not req.documentType and not req.diseaseCategory:
+            intent_method = req.intentRecognitionMethod or "smart"
+            if intent_method == "smart":
+                intent = recognize_smart_medical_intent(question)
+                department = intent.get('department')
+                document_type = intent.get('document_type')
+                disease_category = intent.get('disease_category')
+                confidence = intent.get('confidence', 0.0)
+                reasoning = intent.get('reasoning', '')
+                method = intent.get('method', intent_method)
+            elif intent_method == "qwen":
+                intent = recognize_qwen_medical_intent(question)
+                department = intent.get('department')
+                document_type = intent.get('document_type')
+                disease_category = intent.get('disease_category')
+                confidence = intent.get('confidence', 0.0)
+                reasoning = intent.get('reasoning', '')
+                method = intent.get('method', intent_method)
+            else:
+                intent = recognize_medical_intent(question)
+                department = intent.department
+                document_type = intent.document_type
+                disease_category = intent.disease_category
+                confidence = intent.confidence
+                reasoning = intent.reasoning
+                method = "keyword"
+            intent_result = {
+                'department': department,
+                'document_type': document_type,
+                'disease_category': disease_category,
+                'confidence': confidence,
+                'reasoning': reasoning,
+                'method': method
+            }
+        else:
+            department = req.department
+            document_type = req.documentType
+            disease_category = req.diseaseCategory
+
+        # 字符串到枚举的映射与转换（与流式端点保持一致）
+        department_enum = None
+        document_type_enum = None
+        disease_category_enum = None
+
+        if department:
+            try:
+                department_mapping = {
+                    "呼吸内科": "呼吸科",
+                    "心内科": "心血管科",
+                    "消化内科": "消化科",
+                    "内分泌内科": "内分泌科",
+                    "肾脏内科": "肾内科",
+                    "预防科": "内科",
+                    "保健科": "内科"
+                }
+                mapped_dept = department_mapping.get(department, department)
+                department_enum = MedicalDepartment(mapped_dept)
+            except ValueError:
+                print(f"[WARNING] 无效的科室参数: {department}")
+                department_enum = None
+
+        if document_type:
+            try:
+                doctype_mapping = {
+                    "预防指南": "临床指南",
+                    "诊疗指南": "临床指南",
+                    "治疗指南": "临床指南",
+                    "护理规范": "护理手册",
+                    "康复指导": "护理手册",
+                    "急救指南": "急救流程",
+                    "保健指南": "临床指南",
+                    "健康指南": "临床指南"
+                }
+                mapped_doctype = doctype_mapping.get(document_type, document_type)
+                document_type_enum = DocumentType(mapped_doctype)
+            except ValueError:
+                print(f"[WARNING] 无效的文档类型参数: {document_type}")
+                document_type_enum = None
+
+        if disease_category:
+            try:
+                disease_category_enum = DiseaseCategory(disease_category)
+            except ValueError:
+                print(f"[WARNING] 无效的疾病分类参数: {disease_category}")
+                disease_category_enum = None
+
+        # 医疗检索
+        citations, context_text, metadata = await medical_retrieve(
+            question=question,
+            department=department_enum,
+            document_type=document_type_enum,
+            disease_category=disease_category_enum
+        )
+
+        # 聚合流式事件为非流式结果
+        full_answer_parts: list[str] = []
+        citations_list: list[dict] = []
+        first_metadata: dict | None = None
+        quality_info: dict | None = None
+        safety_warning: dict | None = None
+        used_retrieval: bool = False
+
+        async for event in medical_answer_stream(
+            question=question,
+            citations=citations,
+            context_text=context_text,
+            metadata=metadata,
+            session_id=session_id,
+            enable_safety_check=req.enableSafetyCheck
+        ):
+            et, ed = event.get('type'), event.get('data')
+            if et == 'token' and isinstance(ed, str):
+                full_answer_parts.append(ed)
+            elif et == 'citation' and isinstance(ed, dict):
+                citations_list.append(ed)
+            elif et == 'metadata' and isinstance(ed, dict):
+                first_metadata = ed
+            elif et == 'quality_assessment' and isinstance(ed, dict):
+                quality_info = ed
+            elif et == 'safety_warning' and isinstance(ed, dict):
+                safety_warning = ed
+            elif et == 'done' and isinstance(ed, dict):
+                used_retrieval = bool(ed.get('used_retrieval'))
+
+        answer_text = "".join(full_answer_parts)
+
+        return {
+            "ok": True,
+            "data": {
+                "answer": answer_text,
+                "citations": citations_list,
+                "metadata": first_metadata or metadata,
+                "quality_assessment": quality_info,
+                "safety_warning": safety_warning,
+                "used_retrieval": used_retrieval,
+                "intent": intent_result or {
+                    'department': department,
+                    'document_type': document_type,
+                    'disease_category': disease_category,
+                    'method': req.intentRecognitionMethod or "smart"
+                },
+                "session_id": session_id
+            }
+        }
+    except Exception as e:
+        print(f"[ERROR] medical_qa: {e}")
+        return {"ok": False, "error": str(e)}
+
 @app.post(f"{API_PREFIX}/medical/chat/clear", tags=["Medical RAG"])
 async def medical_chat_clear(req: ClearChatRequest):
     """清除医疗聊天历史"""
