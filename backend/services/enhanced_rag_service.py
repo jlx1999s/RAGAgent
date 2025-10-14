@@ -1,17 +1,36 @@
 # services/enhanced_rag_service.py
 from __future__ import annotations
-import os, asyncio, textwrap
+import os, asyncio, textwrap, logging
 from typing import List, Dict, Any, Tuple, AsyncGenerator, Optional
-from typing_extensions import TypedDict
+# 兼容导入 TypedDict（优先使用标准库typing，其次typing_extensions）
+try:
+    from typing import TypedDict
+except ImportError:
+    from typing_extensions import TypedDict
 
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
-from langchain_community.chat_models import ChatTongyi
-from langchain_openai import OpenAIEmbeddings
-from langchain_community.vectorstores import FAISS
+# 可选依赖：langchain_community 与 langchain_openai，不存在时提供占位
+try:
+    from langchain_community.chat_models import ChatTongyi
+except Exception:
+    ChatTongyi = None
+try:
+    from langchain_openai import OpenAIEmbeddings
+except Exception:
+    OpenAIEmbeddings = None
+try:
+    from langchain_community.vectorstores import FAISS
+except Exception:
+    FAISS = None
 from collections import defaultdict
-from langchain.embeddings.base import Embeddings
+# Embeddings作为类型注解可选导入，缺失时提供最小占位类，避免运行时导入错误
+try:
+    from langchain.embeddings.base import Embeddings
+except Exception:
+    class Embeddings:
+        pass
 import dashscope
 from http import HTTPStatus
 
@@ -171,6 +190,21 @@ class EnhancedMedicalRAGService:
             # 使用知识图谱增强查询
             kg_enhancement = await self.kg_service.enhance_query_with_kg(question)
             
+            # 添加详细的KG增强日志
+            # 模块级日志记录器，保持与其它 services.* 一致的前缀
+            logger = logging.getLogger("services.enhanced_rag_service")
+            
+            if kg_enhancement:
+                extracted_entities = kg_enhancement.get("extracted_entities", [])
+                related_entities = kg_enhancement.get("related_entities", [])
+                suggested_expansions = kg_enhancement.get("suggested_expansions", [])
+                 
+                logger.info(f"KG增强 - 识别实体: {[e.get('name', str(e)) if isinstance(e, dict) else str(e) for e in extracted_entities]}")
+                logger.info(f"KG增强 - 相关实体: {[r.get('name', str(r)) if isinstance(r, dict) else str(r) for r in related_entities]}")
+                logger.info(f"KG增强 - 扩展建议: {suggested_expansions}")
+            else:
+                logging.warning("知识图谱增强未返回结果")
+            
             # 查找相关医疗关联
             associations = self.association_service.find_associations(
                 query=question,
@@ -184,6 +218,7 @@ class EnhancedMedicalRAGService:
                 # 添加相关实体到查询中
                 expansions = kg_enhancement["suggested_expansions"][:3]  # 限制扩展数量
                 enhanced_query += " " + " ".join(expansions)
+                logging.info(f"增强查询添加扩展: {' '.join(expansions)}")
             
             # 基于关联扩展查询
             association_terms = []
@@ -193,6 +228,9 @@ class EnhancedMedicalRAGService:
             if association_terms:
                 association_query = " ".join(set(association_terms))
                 enhanced_query = f"{enhanced_query} {association_query}"
+                logging.info(f"增强查询添加关联词: {association_query}")
+            
+            logging.info(f"最终增强查询: {enhanced_query}")
             
             # 使用增强的医疗搜索
             search_results = self.index_service.search_medical_documents(
@@ -398,7 +436,7 @@ class EnhancedMedicalRAGService:
         # 添加医疗免责声明
         disclaimer = (
             "\n\n---\n"
-            "**医疗免责声明**: 以上信息仅供教育和参考目的，不能替代专业医疗建议、诊断或治疗。"
+            "**医疗免责声明**: 以上信息仅供学习和参考目的，不能替代专业医疗建议、诊断或治疗。"
             "如有健康问题，请咨询合格的医疗专业人员。"
         )
         yield {"type": "token", "data": disclaimer}
