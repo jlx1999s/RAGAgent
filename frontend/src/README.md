@@ -100,9 +100,9 @@ GET  /api/v1/pdf/status               # 查询解析状态
 GET  /api/v1/pdf/page                 # 获取PDF页面图片
 POST /api/v1/index/build              # 构建向量索引
 POST /api/v1/index/search             # 搜索向量索引
-POST /api/v1/chat                     # SSE流式聊天
 GET  /api/v1/pdf/chunk                # 获取引用块详情
-POST /api/v1/chat/clear               # 清空聊天会话
+POST /api/v1/medical/chat             # 医疗模式聊天（SSE流式）
+POST /api/v1/medical/chat/clear       # 清空医疗聊天会话
 ```
 
 ## 📦 项目结构

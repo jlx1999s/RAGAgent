@@ -38,7 +38,7 @@ from services.smart_intent_service import recognize_smart_medical_intent
 from services.medical_taxonomy import MedicalDepartment, DocumentType, DiseaseCategory
 from fastapi.responses import StreamingResponse, JSONResponse
 # 原始RAG服务保留用于兼容性
-from services.rag_service import retrieve, answer_stream
+# 已移除通用聊天依赖，保留医疗相关服务
 
 app = FastAPI(
     title="九天老师公开课：多模态RAG系统API",
@@ -83,87 +83,9 @@ class ChatRequest(BaseModel):
 async def health():
     return {"ok": True, "version": "1.0.0"}
 
-# ---------------- Chat（SSE，POST 返回 event-stream） ----------------
-class ChatRequest(BaseModel):
-    message: str
-    sessionId: Optional[str] = None
-    pdfFileId: Optional[str] = None
-
-@app.post(f"{API_PREFIX}/chat", tags=["Chat"])
-async def chat_stream(req: ChatRequest):
-    """
-    SSE 事件：token | citation | done | error
-    """
-    async def gen():
-        try:
-            question = (req.message or "").strip()
-            session_id = (req.sessionId or "default").strip()  # 默认单会话
-            file_id = (req.pdfFileId or "").strip()
-            
-            # 调试日志
-            print(f"[DEBUG] 收到聊天请求:")
-            print(f"  - message: {req.message}")
-            print(f"  - sessionId: {session_id}")
-            print(f"  - pdfFileId: {file_id}")
-            print(f"  - 当前PDF文件状态: {list(pdf_files.keys())}")
-
-            citations, context_text = [], ""
-            branch = "no_context"
-            if file_id:
-                try:
-                    citations, context_text = await retrieve(question, file_id)
-                    branch = "with_context" if context_text else "no_context"
-                except FileNotFoundError:
-                    branch = "no_context"
-
-            # 先推送引用（若有）
-            if branch == "with_context" and citations:
-                for c in citations:
-                    # 将citation存储到全局字典中
-                    citation_id = c.get("citation_id")
-                    if citation_id:
-                        globals()["citations"][citation_id] = c
-                    yield "event: citation\n"
-                    yield f"data: {json.dumps(c, ensure_ascii=False)}\n\n"
-
-            # 再推送 token 流（内部会写入历史）
-            async for evt in answer_stream(
-                question=question,
-                citations=citations,
-                context_text=context_text,
-                branch=branch,
-                session_id=session_id
-            ):
-                if evt["type"] == "token":
-                    yield "event: token\n"
-                    # 注意：这里确保 data 是合法 JSON 字符串
-                    text = evt["data"].replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
-                    yield f'data: {{"text":"{text}"}}\n\n'
-                elif evt["type"] == "citation":
-                    yield "event: citation\n"
-                    yield f"data: {json.dumps(evt['data'], ensure_ascii=False)}\n\n"
-                elif evt["type"] == "done":
-                    used = "true" if evt["data"].get("used_retrieval") else "false"
-                    yield "event: done\n"
-                    yield f"data: {{\"used_retrieval\": {used}}}\n\n"
-
-        except Exception as e:
-            yield "event: error\n"
-            esc = str(e).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
-            yield f'data: {{"message":"{esc}"}}\n\n'
-
-    headers = {"Cache-Control": "no-cache, no-transform", "Connection": "keep-alive"}
-    return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
-
-# ---------------- Chat: 清除对话 ----------------
+# ---------------- 已移除通用聊天端点 ----------------
 class ClearChatRequest(BaseModel):
     sessionId: Optional[str] = None
-
-@app.post(f"{API_PREFIX}/chat/clear", tags=["Chat"])
-async def chat_clear(req: ClearChatRequest):
-    sid = (req.sessionId or "default").strip()
-    clear_history(sid)
-    return {"ok": True, "sessionId": sid, "cleared": True}
 
 
 # ---------------- PDF: 上传（仅单文件，直接替换） ----------------
