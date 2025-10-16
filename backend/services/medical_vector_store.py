@@ -198,21 +198,69 @@ class MedicalVectorStoreManager:
         results = []
         
         # 确定要搜索的向量存储
-        target_stores = []
+        target_stores: List[str] = []
         
         if department and document_type:
             # 精确匹配
             store_key = self._get_store_key(department, document_type, disease_category)
             if store_key in self.metadata_cache:
                 target_stores.append(store_key)
+            else:
+                # 回退：聚合该科室+文档类型下的所有疾病类别存储
+                fallback_candidates: List[str] = []
+                for sk, metadata in self.metadata_cache.items():
+                    meta_dept = metadata.department.value if hasattr(metadata.department, 'value') else str(metadata.department)
+                    meta_dtype = metadata.document_type.value if hasattr(metadata.document_type, 'value') else str(metadata.document_type)
+                    dept_val = department.value if hasattr(department, 'value') else str(department)
+                    dtype_val = document_type.value if hasattr(document_type, 'value') else str(document_type)
+                    if meta_dept == dept_val and meta_dtype == dtype_val:
+                        # 若用户指定了疾病类别，则优先尝试仅匹配该类别
+                        if disease_category is None:
+                            fallback_candidates.append(sk)
+                        else:
+                            meta_dcat = metadata.disease_category.value if (metadata.disease_category and hasattr(metadata.disease_category, 'value')) else (str(metadata.disease_category) if metadata.disease_category else None)
+                            dcat_val = disease_category.value if hasattr(disease_category, 'value') else str(disease_category)
+                            if meta_dcat == dcat_val:
+                                fallback_candidates.append(sk)
+                            fallback_candidates.append(sk)
+
+                # 如果按指定疾病类别仍无候选，则进一步忽略疾病类别进行聚合
+                if not fallback_candidates and disease_category is not None:
+                    for sk, metadata in self.metadata_cache.items():
+                        meta_dept = metadata.department.value if hasattr(metadata.department, 'value') else str(metadata.department)
+                        meta_dtype = metadata.document_type.value if hasattr(metadata.document_type, 'value') else str(metadata.document_type)
+                        dept_val = department.value if hasattr(department, 'value') else str(department)
+                        dtype_val = document_type.value if hasattr(document_type, 'value') else str(document_type)
+                        if meta_dept == dept_val and meta_dtype == dtype_val:
+                            fallback_candidates.append(sk)
+
+                if fallback_candidates:
+                    target_stores.extend(fallback_candidates)
+                    try:
+                        dept_val = department.value if hasattr(department, 'value') else str(department)
+                        dtype_val = document_type.value if hasattr(document_type, 'value') else str(document_type)
+                        dcat_val = disease_category.value if (disease_category and hasattr(disease_category, 'value')) else (str(disease_category) if disease_category else None)
+                        logger.info(
+                            f"未找到精确存储键 {store_key}，触发回退：聚合 '{dept_val}_{dtype_val}_*' 共 {len(fallback_candidates)} 个存储"
+                            + (f"（原疾病类别: {dcat_val}）" if dcat_val else "")
+                        )
+                    except Exception:
+                        # 记录日志失败不影响检索
+                        pass
         else:
             # 模糊匹配
             for store_key, metadata in self.metadata_cache.items():
-                if department and metadata.department != department:
+                meta_dept = metadata.department.value if hasattr(metadata.department, 'value') else str(metadata.department)
+                meta_dtype = metadata.document_type.value if hasattr(metadata.document_type, 'value') else str(metadata.document_type)
+                meta_dcat = metadata.disease_category.value if (metadata.disease_category and hasattr(metadata.disease_category, 'value')) else (str(metadata.disease_category) if metadata.disease_category else None)
+                dept_val = department.value if (department and hasattr(department, 'value')) else (str(department) if department else None)
+                dtype_val = document_type.value if (document_type and hasattr(document_type, 'value')) else (str(document_type) if document_type else None)
+                dcat_val = disease_category.value if (disease_category and hasattr(disease_category, 'value')) else (str(disease_category) if disease_category else None)
+                if dept_val and meta_dept != dept_val:
                     continue
-                if document_type and metadata.document_type != document_type:
+                if dtype_val and meta_dtype != dtype_val:
                     continue
-                if disease_category and metadata.disease_category != disease_category:
+                if dcat_val and meta_dcat != dcat_val:
                     continue
                 target_stores.append(store_key)
         
@@ -339,6 +387,19 @@ class MedicalSearchEngine:
         document_type = None
         disease_category = None
         
+        # 疾病类别别名映射（临时纠偏，与现有向量存储保持一致）
+        alias_map: Dict[str, DiseaseCategory] = {
+            # 常见中文别名
+            "精神障碍": DiseaseCategory.MENTAL_DISORDERS,
+            "心理障碍": DiseaseCategory.MENTAL_DISORDERS,
+            "精神疾病": DiseaseCategory.NERVOUS_SYSTEM,  # 现有库归到神经系统疾病
+            "神经系统疾病": DiseaseCategory.NERVOUS_SYSTEM,
+            "精神、行为和神经发育障碍": DiseaseCategory.MENTAL_DISORDERS,
+            # 英文/拼写变体（如出现）
+            "mental disorders": DiseaseCategory.MENTAL_DISORDERS,
+            "nervous system": DiseaseCategory.NERVOUS_SYSTEM,
+        }
+        
         if filters:
             if 'department' in filters:
                 try:
@@ -356,7 +417,17 @@ class MedicalSearchEngine:
                 try:
                     disease_category = DiseaseCategory(filters['disease_category'])
                 except ValueError:
-                    pass
+                    # 别名解析
+                    raw = str(filters['disease_category']).strip()
+                    if raw in alias_map:
+                        disease_category = alias_map[raw]
+                        try:
+                            logger.debug(f"疾病类别别名映射: '{raw}' -> '{disease_category.value}'")
+                        except Exception:
+                            pass
+                    else:
+                        # 无法解析则保持 None，由回退逻辑处理
+                        disease_category = None
         
         # 执行搜索
         results = self.vector_store_manager.search_documents(
