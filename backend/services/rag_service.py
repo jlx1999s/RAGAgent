@@ -14,9 +14,13 @@ from collections import defaultdict
 from langchain.embeddings.base import Embeddings
 import dashscope
 from http import HTTPStatus
+from .state_store import (
+    get_session_history as _get_session_history,
+    append_session_history as _append_session_history,
+    clear_session_history as _clear_session_history,
+)
 
-# 存储结构：sessions[session_id] = [{"role":"user|assistant","content":"..."}...]
-_sessions: dict[str, list[dict]] = defaultdict(list)
+# 会话历史改用 Redis/内存回退，通过 services.state_store 统一管理
 
 class DashScopeEmbeddings(Embeddings):
     """自定义DashScope嵌入类，使用原生SDK"""
@@ -66,14 +70,14 @@ class DashScopeEmbeddings(Embeddings):
             print(f"Error in embed_query: {e}")
             raise e
 
-def get_history(session_id: str) -> list[dict]:
-    return _sessions.get(session_id, [])
+async def get_history(session_id: str) -> list[dict]:
+    return await _get_session_history(session_id)
 
-def append_history(session_id: str, role: str, content: str) -> None:
-    _sessions[session_id].append({"role": role, "content": content})
+async def append_history(session_id: str, role: str, content: str) -> None:
+    await _append_session_history(session_id, role, content)
 
-def clear_history(session_id: str) -> None:
-    _sessions.pop(session_id, None)
+async def clear_history(session_id: str) -> None:
+    await _clear_session_history(session_id)
 
 # ---------------- 配置 ----------------
 MODEL_NAME = "qwen-plus"
@@ -215,7 +219,7 @@ async def answer_stream(
 
     # 组装“历史 + 本轮提示”
     llm = _get_llm()
-    history_msgs = get_history(session_id) if session_id else []
+    history_msgs = await get_history(session_id) if session_id else []
 
     if branch == "with_context" and context_text:
         user_prompt = ANSWER_WITH_CONTEXT.format(question=question, context=context_text)
@@ -263,7 +267,7 @@ async def answer_stream(
 
     # 将本轮问答写入历史（仅在提供 session_id 时）
     if session_id:
-        append_history(session_id, "user", question)
-        append_history(session_id, "assistant", "".join(final_text_parts))
+        await append_history(session_id, "user", question)
+        await append_history(session_id, "assistant", "".join(final_text_parts))
 
     yield {"type": "done", "data": {"used_retrieval": branch == "with_context"}}

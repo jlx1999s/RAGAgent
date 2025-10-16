@@ -40,9 +40,13 @@ from .enhanced_index_service import EnhancedMedicalIndexService
 from .medical_knowledge_graph import MedicalKnowledgeGraphService, kg_service
 from .medical_association_service import MedicalAssociationService, medical_association_service, AssociationType
 from .medical_taxonomy import MedicalDepartment, DocumentType, DiseaseCategory
+from .state_store import (
+    get_session_history as _get_session_history,
+    append_session_history as _append_session_history,
+    clear_session_history as _clear_session_history,
+)
 
-# 存储结构：sessions[session_id] = [{"role":"user|assistant","content":"..."}...]
-_sessions: dict[str, list[dict]] = defaultdict(list)
+# 会话历史改用 Redis/内存回退，通过 services.state_store 统一管理
 
 class DashScopeEmbeddings(Embeddings):
     """自定义DashScope嵌入类，使用原生SDK"""
@@ -139,17 +143,17 @@ class EnhancedMedicalRAGService:
             "3. 对于紧急情况，请立即就医\n"
         )
 
-    def get_history(self, session_id: str) -> list[dict]:
-        """获取会话历史"""
-        return _sessions.get(session_id, [])
+    async def get_history(self, session_id: str) -> list[dict]:
+        """获取会话历史（Redis/内存回退）"""
+        return await _get_session_history(session_id)
 
-    def append_history(self, session_id: str, role: str, content: str) -> None:
-        """添加会话历史"""
-        _sessions[session_id].append({"role": role, "content": content})
+    async def append_history(self, session_id: str, role: str, content: str) -> None:
+        """添加会话历史（Redis/内存回退）"""
+        await _append_session_history(session_id, role, content)
 
-    def clear_history(self, session_id: str) -> None:
-        """清除会话历史"""
-        _sessions.pop(session_id, None)
+    async def clear_history(self, session_id: str) -> None:
+        """清除会话历史（Redis/内存回退）"""
+        await _clear_session_history(session_id)
 
     def _get_llm(self):
         """获取语言模型"""
@@ -372,7 +376,7 @@ class EnhancedMedicalRAGService:
         
         # 组装消息
         llm = self._get_llm()
-        history_msgs = self.get_history(session_id) if session_id else []
+        history_msgs = await self.get_history(session_id) if session_id else []
         
         if context_text and context_text != "(no medical documents found)":
             user_prompt = self.medical_answer_prompt.format(
@@ -443,8 +447,8 @@ class EnhancedMedicalRAGService:
         
         # 保存会话历史
         if session_id:
-            self.append_history(session_id, "user", question)
-            self.append_history(session_id, "assistant", full_answer)
+            await self.append_history(session_id, "user", question)
+            await self.append_history(session_id, "assistant", full_answer)
         
         yield {
             "type": "done", 
@@ -638,14 +642,14 @@ class EnhancedMedicalRAGService:
 enhanced_rag_service = EnhancedMedicalRAGService()
 
 # 兼容性函数
-def get_history(session_id: str) -> list[dict]:
-    return enhanced_rag_service.get_history(session_id)
+async def get_history(session_id: str) -> list[dict]:
+    return await enhanced_rag_service.get_history(session_id)
 
-def append_history(session_id: str, role: str, content: str) -> None:
-    enhanced_rag_service.append_history(session_id, role, content)
+async def append_history(session_id: str, role: str, content: str) -> None:
+    await enhanced_rag_service.append_history(session_id, role, content)
 
-def clear_history(session_id: str) -> None:
-    enhanced_rag_service.clear_history(session_id)
+async def clear_history(session_id: str) -> None:
+    await enhanced_rag_service.clear_history(session_id)
 
 async def medical_retrieve(
     question: str, 

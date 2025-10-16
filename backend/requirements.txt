@@ -19,3 +19,5 @@ langchain-text-splitters
 dashscope
 networkx
 scikit-learn
+redis>=5.0.0
+prometheus_client>=0.20.0

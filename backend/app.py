@@ -24,12 +24,27 @@ from services.pdf_service import (
     save_upload, run_full_parse_pipeline,
     original_pdf_path, dir_original_pages, dir_parsed_pages, markdown_output
 )
+from services.state_store import (
+    set_pdf_state, get_pdf_state, update_pdf_state,
+    set_citation, get_citation,
+    redis_health
+)
 from services.index_service import build_faiss_index, search_faiss
 from services.enhanced_index_service import enhanced_index_service, build_medical_index, search_medical_knowledge
 from services.enhanced_rag_service import (
     enhanced_rag_service, medical_retrieve, medical_answer_stream,
     get_history, append_history, clear_history
 )
+try:
+    from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+    PROM_ENABLED = True
+except Exception:
+    PROM_ENABLED = False
+    Counter = Histogram = Gauge = None  # type: ignore
+    def generate_latest():  # type: ignore
+        return b""
+    CONTENT_TYPE_LATEST = "text/plain; version=0.0.4"  # type: ignore
+from fastapi.responses import Response
 from services.medical_knowledge_graph import kg_service
 from services.medical_association_service import medical_association_service
 from services.medical_intent_service import recognize_medical_intent
@@ -57,10 +72,27 @@ app.add_middleware(
 
 API_PREFIX = "/api/v1"
 
-# ---------------- 内存态存储（教学Mock） ----------------
-# 支持多个PDF文件的状态跟踪
-pdf_files: Dict[str, Dict[str, Any]] = {}  # fileId -> {name, pages, status, progress}
-citations_store: Dict[str, Dict[str, Any]] = {}   # citationId -> { fileId, page, snippet, bbox, previewUrl }
+# ---------------- 状态存储（Redis/内存回退） ----------------
+# 统一通过 services.state_store 读写 pdf 状态与 citation 缓存
+
+# ---------------- 指标定义与中间件 ----------------
+if PROM_ENABLED:
+    REQUEST_COUNT = Counter(
+        "http_requests_total", "Total HTTP requests", ["method", "endpoint", "http_status"]
+    )
+    REQUEST_LATENCY = Histogram(
+        "http_request_duration_seconds", "HTTP request latency", ["method", "endpoint"]
+    )
+
+    @app.middleware("http")
+    async def metrics_middleware(request, call_next):
+        start = time.perf_counter()
+        response = await call_next(request)
+        latency = time.perf_counter() - start
+        endpoint = request.url.path
+        REQUEST_COUNT.labels(request.method, endpoint, str(response.status_code)).inc()
+        REQUEST_LATENCY.labels(request.method, endpoint).observe(latency)
+        return response
 
 # ---------------- 工具函数 ----------------
 def rid(prefix: str) -> str:
@@ -81,7 +113,16 @@ class ChatRequest(BaseModel):
 # ---------------- Health ----------------
 @app.get(f"{API_PREFIX}/health", tags=["Health"])
 async def health():
-    return {"ok": True, "version": "1.0.0"}
+    """统一健康检查：包含基本版本与 Redis 健康"""
+    r = await redis_health()
+    return {"ok": True, "version": "1.0.0", "redis": r}
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus 指标暴露端点"""
+    if not PROM_ENABLED:
+        return Response(status_code=204)
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 # ---------------- 已移除通用聊天端点 ----------------
 class ClearChatRequest(BaseModel):
@@ -97,51 +138,50 @@ async def pdf_upload(file: UploadFile = File(...), replace: Optional[bool] = Tru
     # 生成新的 fileId
     fid = rid("f")
     saved = save_upload(fid, await file.read(), file.filename)
-    # 将文件信息存储到多文件字典中
-    pdf_files[fid] = {
+    # 写入状态存储
+    await set_pdf_state(fid, {
         "name": saved["name"],
         "pages": saved["pages"],
         "status": "idle",
         "progress": 0
-    }
+    })
     return saved
 
 # ---------------- PDF: 触发解析 ----------------
 @app.post(f"{API_PREFIX}/pdf/parse", tags=["PDF"])
 async def pdf_parse(payload: Dict[str, Any] = Body(...), bg: BackgroundTasks = None):
     file_id = payload.get("fileId")
-    if file_id not in pdf_files:
+    state = await get_pdf_state(file_id)
+    if not state:
         return JSONResponse(err("FILE_NOT_FOUND", "未找到该文件"), status_code=400)
+    await update_pdf_state(file_id, {"status": "parsing", "progress": 5})
 
-    pdf_files[file_id]["status"] = "parsing"
-    pdf_files[file_id]["progress"] = 5
-
-    def _job():
+    async def _job():
         try:
-            # 20 → 60 → 100 三阶段进度示意
-            pdf_files[file_id]["progress"] = 20
-            run_full_parse_pipeline(file_id)   # 真解析
-            pdf_files[file_id]["progress"] = 100
-            pdf_files[file_id]["status"] = "ready"
+            # 20 → 100 进度示意
+            await update_pdf_state(file_id, {"progress": 20})
+            # 运行解析管线（在线程池中避免阻塞事件循环）
+            await asyncio.to_thread(run_full_parse_pipeline, file_id)
+            await update_pdf_state(file_id, {"progress": 100, "status": "ready"})
         except Exception as e:
-            pdf_files[file_id]["status"] = "error"
-            pdf_files[file_id]["progress"] = 0
+            await update_pdf_state(file_id, {"status": "error", "progress": 0})
             print("Parse error:", e)
 
     if bg is not None:
         bg.add_task(_job)
     else:
-        _job()
+        await _job()
 
     return {"jobId": rid("j")}
 
 # ---------------- PDF: 状态 ----------------
 @app.get(f"{API_PREFIX}/pdf/status", tags=["PDF"])
 async def pdf_status(fileId: str = Query(...)):
-    # 检查文件是否存在于内存状态中
-    if fileId in pdf_files:
-        resp = {"status": pdf_files[fileId]["status"], "progress": pdf_files[fileId]["progress"]}
-        if pdf_files[fileId]["status"] == "error":
+    # 优先从状态存储读取
+    state = await get_pdf_state(fileId)
+    if state:
+        resp = {"status": state.get("status", "idle"), "progress": state.get("progress", 0)}
+        if resp["status"] == "error":
             resp["errorMsg"] = "解析失败"
         return resp
     
@@ -217,7 +257,7 @@ async def pdf_images(
 # ---------------- PDF: 引用片段 ----------------
 @app.get(f"{API_PREFIX}/pdf/chunk", tags=["PDF"])
 async def pdf_chunk(citationId: str = Query(...)):
-    ref = citations_store.get(citationId)
+    ref = await get_citation(citationId)
     if not ref:
         return JSONResponse(err("NOT_FOUND", "无该引用"), status_code=404)
     return ref
@@ -233,19 +273,19 @@ class SearchRequest(BaseModel):
 @app.post(f"{API_PREFIX}/index/build", tags=["Index"])
 async def index_build(req: BuildIndexRequest):
     # 检查文件是否存在
-    if req.fileId not in pdf_files:
-        # 如果内存中没有，检查文件系统中是否存在已解析的文件
+    state = await get_pdf_state(req.fileId)
+    if not state:
+        # 状态存储没有，再检查文件系统存在性
         from services.pdf_service import original_pdf_path, markdown_output
         pdf_path = original_pdf_path(req.fileId)
         md_path = markdown_output(req.fileId)
-        
         if not pdf_path.exists():
             raise HTTPException(status_code=400, detail="FILE_NOT_FOUND")
         if not md_path.exists():
             raise HTTPException(status_code=409, detail="NEED_PARSE_FIRST")
     else:
-        # 检查文件状态
-        if pdf_files[req.fileId]["status"] != "ready":
+        # 有状态，必须 ready 才能构建索引
+        if state.get("status") != "ready":
             raise HTTPException(status_code=409, detail="NEED_PARSE_FIRST")
 
     out = build_faiss_index(req.fileId)
@@ -718,11 +758,11 @@ async def medical_qa(req: MedicalChatRequest):
                 full_answer_parts.append(ed)
             elif et == 'citation' and isinstance(ed, dict):
                 citations_list.append(ed)
-                # 写入全局引用缓存，供 /pdf/chunk 按 citationId 查询
+                # 写入引用缓存，供 /pdf/chunk 按 citationId 查询
                 try:
                     cid = ed.get('citation_id') or ed.get('id') or ed.get('citationId')
                     if cid:
-                        citations_store[cid] = ed
+                        await set_citation(cid, ed)
                 except Exception as _cache_err:
                     print(f"[WARN] Failed to cache citation: {_cache_err}")
             elif et == 'metadata' and isinstance(ed, dict):
@@ -763,7 +803,7 @@ async def medical_chat_clear(req: ClearChatRequest):
     """清除医疗聊天历史"""
     try:
         session_id = (req.sessionId or "medical_default").strip()
-        clear_history(session_id)
+        await clear_history(session_id)
         return {"ok": True, "message": f"Medical chat history cleared for session: {session_id}"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -798,7 +838,7 @@ async def analyze_drug_interactions(req: DrugInteractionRequest):
 async def get_medical_chat_history(sessionId: str = Query("medical_default")):
     """获取医疗聊天历史"""
     try:
-        history = get_history(sessionId)
+        history = await get_history(sessionId)
         return {"ok": True, "data": {"sessionId": sessionId, "history": history}}
     except Exception as e:
         return {"ok": False, "error": str(e)}
