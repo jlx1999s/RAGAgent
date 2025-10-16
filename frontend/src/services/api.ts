@@ -1,5 +1,9 @@
+/// <reference types="vite/client" />
 // API服务层 - 处理所有后端API调用
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8002/api/v1';
+// 兼容某些类型环境下 ImportMeta 上没有 env 的报错
+const API_BASE_URL: string = ((import.meta as any)?.env?.VITE_API_BASE_URL)
+  || (typeof (globalThis as any)?.process !== 'undefined' ? (globalThis as any).process?.env?.VITE_API_BASE_URL : undefined)
+  || 'http://localhost:8002/api/v1';
 
 export interface PdfUploadResponse {
   fileId: string;
@@ -464,7 +468,7 @@ export async function processMedicalChatStream(
   }) => void,
   // 新增：元数据事件（包含知识图谱增强内容）
   onMetadata: (metadata: Record<string, any>) => void,
-  onDone: (data: { used_retrieval: boolean; safety_checked?: boolean }) => void,
+  onDone: (data: { used_retrieval: boolean; safety_checked?: boolean; medical_analysis?: any }) => void,
   onError: (error: string) => void,
   sessionId = 'medical_default',
   department?: string,
@@ -493,6 +497,46 @@ export async function processMedicalChatStream(
 
     if (!response.ok) {
       throw new Error(`Medical chat failed: ${response.statusText}`);
+    }
+
+    // 兼容后端改为 JSON 返回：如果是 JSON，直接一次性解析并触发回调
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      try {
+        const result = await response.json();
+        if (!result || result.ok === false) {
+          onError(result?.error || 'Medical chat failed');
+          return abortController;
+        }
+        const data = result.data || {};
+        const answer: string = data.answer || '';
+        const citations: any[] = Array.isArray(data.citations) ? data.citations : [];
+        const metadata: Record<string, any> | undefined = data.metadata;
+        const usedRetrieval: boolean = !!data.used_retrieval;
+        const qualityAssessment: any = data.quality_assessment;
+
+        if (answer) {
+          onToken(answer);
+        }
+        for (const c of citations) {
+          onCitation({
+            citation_id: c.citation_id ?? c.id ?? '',
+            fileId: c.fileId ?? '',
+            rank: c.rank ?? 0,
+            page: c.page ?? 0,
+            previewUrl: c.previewUrl ?? '',
+            snippet: c.snippet ?? c.text ?? undefined,
+          });
+        }
+        if (metadata) {
+          onMetadata(metadata);
+        }
+        onDone({ used_retrieval: usedRetrieval, safety_checked: !!qualityAssessment, medical_analysis: qualityAssessment });
+        return abortController;
+      } catch (e) {
+        onError(e instanceof Error ? e.message : 'Failed to parse JSON');
+        return abortController;
+      }
     }
 
     const reader = response.body?.getReader();

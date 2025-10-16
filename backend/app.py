@@ -60,7 +60,7 @@ API_PREFIX = "/api/v1"
 # ---------------- 内存态存储（教学Mock） ----------------
 # 支持多个PDF文件的状态跟踪
 pdf_files: Dict[str, Dict[str, Any]] = {}  # fileId -> {name, pages, status, progress}
-citations: Dict[str, Dict[str, Any]] = {}   # citationId -> { fileId, page, snippet, bbox, previewUrl }
+citations_store: Dict[str, Dict[str, Any]] = {}   # citationId -> { fileId, page, snippet, bbox, previewUrl }
 
 # ---------------- 工具函数 ----------------
 def rid(prefix: str) -> str:
@@ -217,7 +217,7 @@ async def pdf_images(
 # ---------------- PDF: 引用片段 ----------------
 @app.get(f"{API_PREFIX}/pdf/chunk", tags=["PDF"])
 async def pdf_chunk(citationId: str = Query(...)):
-    ref = citations.get(citationId)
+    ref = citations_store.get(citationId)
     if not ref:
         return JSONResponse(err("NOT_FOUND", "无该引用"), status_code=404)
     return ref
@@ -580,155 +580,12 @@ async def medical_index_optimize():
 @app.post(f"{API_PREFIX}/medical/chat", tags=["Medical RAG"])
 async def medical_chat_stream(req: MedicalChatRequest):
     """
-    医疗问答聊天（SSE流式）
+    医疗问答聊天（暂时禁用SSE，改为JSON返回）
     集成安全审核和质量评估
     """
-    async def gen():
-        try:
-            question = (req.message or "").strip()
-            session_id = (req.sessionId or "medical_default").strip()
-            
-            if not question:
-                yield f"data: {json.dumps({'type': 'error', 'data': {'message': '问题不能为空'}})}\n\n"
-                return
-            
-            # 智能意图识别：如果用户没有指定参数，则自动推断
-            if not req.department and not req.documentType and not req.diseaseCategory:
-                # 根据用户选择的方法进行意图识别
-                intent_method = req.intentRecognitionMethod or "smart"
-                
-                if intent_method == "smart":
-                    # 使用智能意图识别（推荐）
-                    intent = recognize_smart_medical_intent(question)
-                    department = intent.get('department')
-                    document_type = intent.get('document_type')
-                    disease_category = intent.get('disease_category')
-                    confidence = intent.get('confidence', 0.0)
-                    reasoning = intent.get('reasoning', '')
-                    method = intent.get('method', intent_method)
-                elif intent_method == "qwen":
-                    # 使用原始Qwen意图识别
-                    intent = recognize_qwen_medical_intent(question)
-                    department = intent.get('department')
-                    document_type = intent.get('document_type')
-                    disease_category = intent.get('disease_category')
-                    confidence = intent.get('confidence', 0.0)
-                    reasoning = intent.get('reasoning', '')
-                    method = intent.get('method', intent_method)
-                else:
-                    # 使用关键词意图识别
-                    intent = recognize_medical_intent(question)
-                    department = intent.department
-                    document_type = intent.document_type
-                    disease_category = intent.disease_category
-                    confidence = intent.confidence
-                    reasoning = intent.reasoning
-                    method = "keyword"
-                
-                # 发送意图识别结果
-                intent_data = {
-                    'department': department, 
-                    'document_type': document_type, 
-                    'disease_category': disease_category, 
-                    'confidence': confidence, 
-                    'reasoning': reasoning,
-                    'method': method
-                }
-                yield f"data: {json.dumps({'type': 'intent_recognition', 'data': intent_data})}\n\n"
-            else:
-                # 使用用户指定的参数
-                department = req.department
-                document_type = req.documentType
-                disease_category = req.diseaseCategory
-            
-            # 类型转换：将字符串转换为枚举类型
-            department_enum = None
-            document_type_enum = None
-            disease_category_enum = None
-            
-            # 科室映射和转换
-            if department:
-                try:
-                    # 科室映射 - 基于实际文档分布进行映射
-                    department_mapping = {
-                        "呼吸内科": "呼吸科",
-                        "心内科": "心血管科",
-                        "消化内科": "消化科",
-                        "内分泌内科": "内分泌科",
-                        "肾脏内科": "肾内科",
-                        "预防科": "内科",
-                        "保健科": "内科"
-                    }
-                    
-                    # 使用智能意图识别的结果，不再进行硬编码映射
-                    mapped_dept = department_mapping.get(department, department)
-                    department_enum = MedicalDepartment(mapped_dept)
-                except ValueError:
-                    print(f"[WARNING] 无效的科室参数: {department}")
-                    department_enum = None
-            
-            # 文档类型映射和转换
-            if document_type:
-                try:
-                    # 文档类型映射
-                    doctype_mapping = {
-                        "预防指南": "临床指南",
-                        "诊疗指南": "临床指南",
-                        "治疗指南": "临床指南",
-                        "护理规范": "护理手册",
-                        "康复指导": "护理手册",
-                        "急救指南": "急救流程",
-                        "保健指南": "临床指南",
-                        "健康指南": "临床指南"
-                    }
-                    mapped_doctype = doctype_mapping.get(document_type, document_type)
-                    document_type_enum = DocumentType(mapped_doctype)
-                except ValueError:
-                    print(f"[WARNING] 无效的文档类型参数: {document_type}")
-                    document_type_enum = None
-            
-            # 疾病分类映射和转换
-            if disease_category:
-                try:
-                    # 疾病类别映射 - 修复错误的映射逻辑
-                    # 注意：向量存储的实际结构是 呼吸科_临床指南_感染性疾病
-                    # 所以不应该将"感染性疾病"映射为其他类别
-                    disease_category_enum = DiseaseCategory(disease_category)
-                except ValueError:
-                    print(f"[WARNING] 无效的疾病分类参数: {disease_category}")
-                    disease_category_enum = None
-            
-            # 医疗检索
-            citations, context_text, metadata = await medical_retrieve(
-                question=question,
-                department=department_enum,
-                document_type=document_type_enum,
-                disease_category=disease_category_enum
-            )
-            
-            # 将引用存储到全局字典中，以便 /pdf/chunk 端点可以访问
-            if citations:
-                for c in citations:
-                    citation_id = c.get("citation_id")
-                    if citation_id:
-                        globals()["citations"][citation_id] = c
-            
-            # 流式生成回答
-            async for event in medical_answer_stream(
-                question=question,
-                citations=citations,
-                context_text=context_text,
-                metadata=metadata,
-                session_id=session_id,
-                enable_safety_check=req.enableSafetyCheck
-            ):
-                yield f"data: {json.dumps(event)}\n\n"
-                
-        except Exception as e:
-            print(f"[ERROR] medical_chat_stream: {e}")
-            yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(e)}})}\n\n"
-    
-    return StreamingResponse(gen(), media_type="text/plain; charset=utf-8")
+    # 为了便于生产系统（如慢病管理）对接，临时关闭SSE，直接复用非流式聚合实现
+    # 行为与 /medical/qa 保持一致：一次性返回完整答案、引用、检索元数据、质量/安全评估
+    return await medical_qa(req)
 
 @app.post(f"{API_PREFIX}/medical/qa", tags=["Medical RAG"])
 async def medical_qa(req: MedicalChatRequest):
@@ -861,6 +718,13 @@ async def medical_qa(req: MedicalChatRequest):
                 full_answer_parts.append(ed)
             elif et == 'citation' and isinstance(ed, dict):
                 citations_list.append(ed)
+                # 写入全局引用缓存，供 /pdf/chunk 按 citationId 查询
+                try:
+                    cid = ed.get('citation_id') or ed.get('id') or ed.get('citationId')
+                    if cid:
+                        citations_store[cid] = ed
+                except Exception as _cache_err:
+                    print(f"[WARN] Failed to cache citation: {_cache_err}")
             elif et == 'metadata' and isinstance(ed, dict):
                 first_metadata = ed
             elif et == 'quality_assessment' and isinstance(ed, dict):
