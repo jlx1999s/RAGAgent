@@ -1,0 +1,11 @@
+{
+  "department": "精神科",
+  "document_type": "临床指南",
+  "disease_category": "神经系统疾病",
+  "chunks_count": 42,
+  "processed_at": "2025-10-16T21:45:49.393217",
+  "custom_metadata": {
+    "source": "markdown_upload",
+    "uploadTime": "2025-10-16T13:45:45.468Z"
+  }
+}

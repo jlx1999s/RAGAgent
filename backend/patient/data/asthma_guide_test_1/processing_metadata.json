@@ -1,0 +1,13 @@
+{
+  "department": "呼吸科",
+  "document_type": "临床指南",
+  "disease_category": "呼吸系统疾病",
+  "chunks_count": 1,
+  "processed_at": "2025-10-16T19:03:49.747161",
+  "custom_metadata": {
+    "source": "markdown_upload",
+    "uploadTime": "2025-10-16T19:03:48+08:00",
+    "author": "测试用例",
+    "version": "1.0"
+  }
+}

@@ -3,7 +3,7 @@ import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
 import { ScrollArea } from "./ui/scroll-area";
 import { Avatar, AvatarFallback } from "./ui/avatar";
-import { Send, User, Bot, Stethoscope } from "lucide-react";
+import { Send, User, Bot, Stethoscope, FileText, X } from "lucide-react";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import { processMedicalChatStream, clearMedicalSession, medicalQA } from "../services/api";
 import { toast } from "sonner";
@@ -42,6 +42,11 @@ export function ChatInterface({
   
   // 新增：KG 增强元数据（仅医疗模式使用）
   const [kgMeta, setKgMeta] = useState<Record<string, any> | null>(null);
+  
+  // 新增：体检报告相关状态
+  const [medicalReport, setMedicalReport] = useState("");
+  const [reportType, setReportType] = useState("");
+  const [showReportInput, setShowReportInput] = useState(false);
   
   const initialAssistant = "您好！我是您的医疗AI助手。我可以帮助您分析症状、提供医疗建议，并基于上传的医疗文档回答问题。请注意，我的建议仅供参考，不能替代专业医疗诊断。";
 
@@ -128,7 +133,9 @@ export function ChatInterface({
         undefined,  // documentType - 由后端意图识别自动推断
         undefined,  // diseaseCategory - 由后端意图识别自动推断
         true,       // enableSafetyCheck
-        'smart'     // intentRecognitionMethod
+        'smart',    // intentRecognitionMethod
+        medicalReport || undefined,  // medicalReport
+        reportType || undefined      // reportType
       );
 
       if (!result.ok) {
@@ -370,6 +377,64 @@ export function ChatInterface({
 
       {/* 输入区 */}
       <div className="relative p-6 border-t border-border/60 flex-shrink-0 bg-card/40">
+        {/* 体检报告输入区 */}
+        {showReportInput && (
+          <div className="mb-4 p-4 border border-border/40 rounded-xl bg-secondary/20 backdrop-blur-sm">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <FileText className="w-4 h-4 text-primary" />
+                <span className="text-sm font-medium">体检报告信息</span>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setShowReportInput(false);
+                  setMedicalReport("");
+                  setReportType("");
+                }}
+                className="h-6 w-6 p-0"
+              >
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+            
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">报告类型</label>
+                <select
+                  value={reportType}
+                  onChange={(e) => setReportType(e.target.value)}
+                  className="w-full px-3 py-2 text-sm bg-input/60 border border-border/40 rounded-lg focus:border-primary/60 focus:outline-none"
+                >
+                  <option value="">请选择报告类型</option>
+                  <option value="血常规">血常规</option>
+                  <option value="尿常规">尿常规</option>
+                  <option value="肝功能">肝功能</option>
+                  <option value="肾功能">肾功能</option>
+                  <option value="血脂">血脂</option>
+                  <option value="血糖">血糖</option>
+                  <option value="心电图">心电图</option>
+                  <option value="胸片">胸片</option>
+                  <option value="B超">B超</option>
+                  <option value="其他">其他</option>
+                </select>
+              </div>
+              
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">报告内容</label>
+                <Textarea
+                  value={medicalReport}
+                  onChange={(e) => setMedicalReport(e.target.value)}
+                  placeholder="请输入体检报告的具体内容，如检查项目、数值、参考范围等..."
+                  className="bg-input/60 border-border/40 focus:border-primary/60 text-sm resize-none min-h-[80px]"
+                  rows={3}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+        
         <div className="flex gap-3 items-end">
           <div className="relative flex-1">
             <Textarea
@@ -388,6 +453,20 @@ export function ChatInterface({
               rows={1}
             />
           </div>
+          
+          {/* 体检报告按钮 */}
+          <Button
+            onClick={() => setShowReportInput(!showReportInput)}
+            variant="outline"
+            className={`h-[52px] w-[52px] p-0 rounded-xl border transition-all duration-200 flex-shrink-0 ${
+              showReportInput || medicalReport 
+                ? 'bg-primary/10 border-primary/40 text-primary' 
+                : 'border-border/40 hover:border-primary/60'
+            }`}
+          >
+            <FileText className="w-5 h-5" />
+          </Button>
+          
           <Button
             onClick={handleSend}
             disabled={!canSend}
@@ -396,6 +475,14 @@ export function ChatInterface({
             <Send className="w-5 h-5" />
           </Button>
         </div>
+        
+        {/* 体检报告状态提示 */}
+        {medicalReport && (
+          <div className="mt-2 text-xs text-muted-foreground flex items-center gap-1">
+            <FileText className="w-3 h-3" />
+            <span>已添加{reportType || '体检'}报告信息</span>
+          </div>
+        )}
       </div>
     </div>
   );

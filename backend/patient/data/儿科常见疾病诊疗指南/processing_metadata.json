@@ -1,0 +1,11 @@
+{
+  "department": "儿科",
+  "document_type": "临床指南",
+  "disease_category": "感染性疾病",
+  "chunks_count": 2,
+  "processed_at": "2025-10-03T19:03:45.701467",
+  "custom_metadata": {
+    "source": "markdown_upload",
+    "uploadTime": "2025-10-03T11:03:44.918Z"
+  }
+}

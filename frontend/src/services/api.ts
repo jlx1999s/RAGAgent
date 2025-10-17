@@ -3,7 +3,7 @@
 // 兼容某些类型环境下 ImportMeta 上没有 env 的报错
 const API_BASE_URL: string = ((import.meta as any)?.env?.VITE_API_BASE_URL)
   || (typeof (globalThis as any)?.process !== 'undefined' ? (globalThis as any).process?.env?.VITE_API_BASE_URL : undefined)
-  || 'http://localhost:8002/api/v1';
+  || 'http://localhost:8000/api/v1';
 
 export interface PdfUploadResponse {
   fileId: string;
@@ -597,7 +597,9 @@ export async function medicalQA(
   documentType?: string,
   diseaseCategory?: string,
   enableSafetyCheck = true,
-  intentRecognitionMethod = 'smart'
+  intentRecognitionMethod = 'smart',
+  medicalReport?: string,
+  reportType?: string
 ): Promise<{
   ok: boolean;
   data: {
@@ -639,6 +641,8 @@ export async function medicalQA(
       diseaseCategory,
       enableSafetyCheck,
       intentRecognitionMethod,
+      medicalReport,
+      reportType,
     }),
   });
 
