@@ -403,6 +403,105 @@ class MedicalKnowledgeGraph:
         
         return neighbors
 
+    def get_expansion_suggestions(
+        self, 
+        entity_name: str, 
+        entity_type: EntityType,
+        context: Optional[Dict[str, Any]] = None
+    ) -> List[str]:
+        """
+        基于上下文生成扩展建议
+        
+        Args:
+            entity_name: 实体名称
+            entity_type: 实体类型
+            context: 上下文信息，包含科室、文档类型、疾病分类等
+        
+        Returns:
+            扩展建议列表
+        """
+        suggestions = []
+        
+        try:
+            # 查找实体
+            entities = self.find_entities_by_name(entity_name, fuzzy=True)
+            if not entities:
+                return suggestions
+            
+            entity = entities[0]  # 取最匹配的实体
+            
+            # 获取相关实体
+            related_entities = self.get_related_entities(entity.id, max_depth=2, max_results=10)
+            
+            # 根据上下文过滤和排序建议
+            context_department = context.get('department') if context else None
+            context_doc_type = context.get('document_type') if context else None
+            context_disease_category = context.get('disease_category') if context else None
+            
+            scored_suggestions = []
+            
+            for depth, entities_list in related_entities.items():
+                for related_entity, relation_type, confidence in entities_list:
+                    base_score = confidence * (0.8 if depth == "depth_1" else 0.6)
+                    
+                    # 根据上下文调整分数
+                    if context_department:
+                        # 如果是特定科室，提高相关实体的分数
+                        if self._is_department_relevant(related_entity, context_department):
+                            base_score += 0.2
+                    
+                    if context_doc_type:
+                        # 根据文档类型调整分数
+                        if context_doc_type in ['诊疗指南', '临床路径'] and related_entity.entity_type in [EntityType.TREATMENT, EntityType.PROCEDURE]:
+                            base_score += 0.15
+                        elif context_doc_type == '药品说明书' and related_entity.entity_type == EntityType.DRUG:
+                            base_score += 0.15
+                    
+                    if context_disease_category:
+                        # 根据疾病分类调整分数
+                        if related_entity.entity_type in [EntityType.DISEASE, EntityType.SYMPTOM]:
+                            base_score += 0.1
+                    
+                    # 根据关系类型调整分数
+                    if relation_type in [RelationType.TREATS, RelationType.SYMPTOM_OF, RelationType.CAUSES]:
+                        base_score += 0.1
+                    
+                    scored_suggestions.append((related_entity.name, base_score))
+            
+            # 排序并去重
+            scored_suggestions.sort(key=lambda x: x[1], reverse=True)
+            seen = set()
+            for name, score in scored_suggestions:
+                if name.lower() not in seen and len(suggestions) < 5:
+                    suggestions.append(name)
+                    seen.add(name.lower())
+            
+        except Exception as e:
+            print(f"Error generating expansion suggestions: {e}")
+        
+        return suggestions
+    
+    def _is_department_relevant(self, entity: MedicalEntity, department: str) -> bool:
+        """检查实体是否与特定科室相关"""
+        # 简化的科室相关性检查
+        department_keywords = {
+            '心血管内科': ['心脏', '血管', '心律', '血压', '冠心病'],
+            '呼吸内科': ['肺', '呼吸', '气管', '支气管', '肺炎'],
+            '消化内科': ['胃', '肠', '肝', '胆', '胰腺', '消化'],
+            '神经内科': ['大脑', '神经', '脑血管', '癫痫', '帕金森'],
+            '内分泌科': ['糖尿病', '甲状腺', '激素', '代谢'],
+            '肾内科': ['肾', '尿', '透析', '肾炎'],
+            '血液科': ['血液', '白血病', '贫血', '血小板'],
+            '肿瘤科': ['肿瘤', '癌症', '化疗', '放疗'],
+            '骨科': ['骨', '关节', '脊柱', '骨折'],
+            '外科': ['手术', '切除', '缝合', '麻醉']
+        }
+        
+        keywords = department_keywords.get(department, [])
+        entity_text = f"{entity.name} {entity.description}".lower()
+        
+        return any(keyword in entity_text for keyword in keywords)
+    
     def get_statistics(self) -> Dict[str, Any]:
         """获取知识图谱统计信息"""
         stats = {

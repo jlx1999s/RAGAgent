@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { processMedicalChatStream, clearMedicalSession } from "@/services/api";
+import { medicalQA, clearMedicalSession } from "@/services/api";
 
 export default function MinimalMedicalChat() {
   const [message, setMessage] = useState("患者长期血压维持在140/90，如何管理与用药？");
@@ -18,36 +18,31 @@ export default function MinimalMedicalChat() {
     setCitationsCount(0);
     setQualityInfo("");
 
-    await processMedicalChatStream(
-      message,
-      // onToken
-      (text) => {
-        setOutput((prev) => prev + text);
-      },
-      // onCitation
-      (_c) => {
-        setCitationsCount((n) => n + 1);
-      },
-      // onMetadata
-      (meta) => {
-        if (meta?.quality_assessment) {
-          const qa = meta.quality_assessment;
-          const info = `质量: ${qa.quality_level}(${(qa.quality_score * 100).toFixed(0)}), 安全: ${qa.safety_level}(${(qa.safety_score * 100).toFixed(0)})`;
-          setQualityInfo(info);
-        }
-      },
-      // onDone
-      (_done) => {
-        setStatus("done");
-      },
-      // onError
-      (err) => {
-        setStatus("error");
-        setErrorMsg(typeof err === "string" ? err : JSON.stringify(err));
-      },
-      // sessionId 与分类均可选，这里只传 sessionId，其他使用默认值
-      sessionId
-    );
+    try {
+      const response = await medicalQA(message, sessionId);
+      
+      if (!response.ok) {
+        throw new Error(response.error || "API调用失败");
+      }
+      
+      // 显示回答
+      setOutput(response.data.answer);
+      
+      // 显示引用数量
+      setCitationsCount(response.data.citations?.length || 0);
+      
+      // 显示质量评估信息
+      if (response.data.metadata?.quality_assessment) {
+        const qa = response.data.metadata.quality_assessment;
+        const info = `质量: ${qa.quality_level}(${(qa.quality_score * 100).toFixed(0)}), 安全: ${qa.safety_level}(${(qa.safety_score * 100).toFixed(0)})`;
+        setQualityInfo(info);
+      }
+      
+      setStatus("done");
+    } catch (error) {
+      setStatus("error");
+      setErrorMsg(error instanceof Error ? error.message : "请求失败");
+    }
   };
 
   const clearSession = async () => {
@@ -65,7 +60,7 @@ export default function MinimalMedicalChat() {
 
   return (
     <div style={{ maxWidth: 800, margin: "40px auto", padding: 16 }}>
-      <h2 style={{ fontSize: 20, marginBottom: 12 }}>最简医疗流式对接示例</h2>
+      <h2 style={{ fontSize: 20, marginBottom: 12 }}>最简医疗问答对接示例</h2>
 
       <div style={{ display: "flex", gap: 12, marginBottom: 8 }}>
         <input
@@ -85,7 +80,7 @@ export default function MinimalMedicalChat() {
       />
 
       <div style={{ display: "flex", gap: 12, marginTop: 10 }}>
-        <button onClick={startStream} style={{ padding: "8px 12px" }}>开始流式</button>
+        <button onClick={startStream} style={{ padding: "8px 12px" }}>开始问答</button>
       </div>
 
       <div style={{ marginTop: 20, fontSize: 14, color: "#555" }}>

@@ -12,6 +12,9 @@ from typing import Optional
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
+# 解决OpenMP冲突问题，防止FAISS加载时出现OMP错误
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
 # 配置Hugging Face镜像
 os.environ['HF_ENDPOINT'] = os.getenv('HF_ENDPOINT', 'https://hf-mirror.com')
 os.environ['HUGGINGFACE_HUB_CACHE'] = os.getenv('HUGGINGFACE_HUB_CACHE', '/tmp/huggingface_cache')

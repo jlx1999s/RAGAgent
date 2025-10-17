@@ -5,7 +5,7 @@ import { ScrollArea } from "./ui/scroll-area";
 import { Avatar, AvatarFallback } from "./ui/avatar";
 import { Send, User, Bot, Stethoscope } from "lucide-react";
 import { MarkdownRenderer } from "./MarkdownRenderer";
-import { processMedicalChatStream, clearMedicalSession } from "../services/api";
+import { processMedicalChatStream, clearMedicalSession, medicalQA } from "../services/api";
 import { toast } from "sonner";
 
 type Reference = {
@@ -120,128 +120,81 @@ export function ChatInterface({
     setKgMeta(null);
 
     try {
+      // 使用非流式医疗问答API
+      const result = await medicalQA(
+        userText,
+        threadId,
+        undefined,  // department - 由后端意图识别自动推断
+        undefined,  // documentType - 由后端意图识别自动推断
+        undefined,  // diseaseCategory - 由后端意图识别自动推断
+        true,       // enableSafetyCheck
+        'smart'     // intentRecognitionMethod
+      );
+
+      if (!result.ok) {
+        throw new Error(result.error || '医疗问答失败');
+      }
+
+      const data = result.data;
       
-        // 使用医疗聊天API
-        await processMedicalChatStream(
-          userText,
-          // onToken
-          (token: string) => {
-            setCurrentResponse((prev) => prev + token);
-            currentResponseRef.current += token;
-          },
-          // onCitation
-          (c: {
-            citation_id: string;
-            fileId: string;
-            rank: number;
-            page: number;
-            previewUrl: string;
-            snippet?: string;
-          }) => {
-            // 去重：按 citation_id
-            if (!c.citation_id || citationIdsRef.current.has(c.citation_id)) return;
-            citationIdsRef.current.add(c.citation_id);
+      // 处理引用
+      const finalRefs: Reference[] = data.citations.map((c, index) => ({
+        id: index + 1,
+        text: `第 ${c.page ?? "?"} 页相关内容`,
+        page: c.page ?? 0,
+        citationId: c.citation_id,
+        rank: c.rank,
+        snippet: c.snippet,
+      }));
 
-            const newRef: Reference = {
-              id: currentReferencesRef.current.length + 1,
-              text: `第 ${c.page ?? "?"} 页相关内容`,
-              page: c.page ?? 0,
-              citationId: c.citation_id,
-              rank: c.rank,
-              snippet: c.snippet,
-            };
+      // 处理KG增强信息
+      let kgSummary = "";
+      const kgEnhancement = data.metadata?.kg_enhancement;
+      if (kgEnhancement) {
+        const entities = (kgEnhancement.extracted_entities || []).map((e: any) => e.name || e.entity || e).join(", ");
+        const related = (kgEnhancement.related_entities || []).map((r: any) => r.name || r.entity || r).join(", ");
+        const expansions = (kgEnhancement.suggested_expansions || []).join(", ");
+        kgSummary = [
+          "\n\n---\n",
+          "图谱增强信息：",
+          entities ? `\n• 识别实体：${entities}` : "",
+          related ? `\n• 相关实体：${related}` : "",
+          expansions ? `\n• 扩展建议：${expansions}` : "",
+        ].join("");
+      }
 
-            // 更新 state & ref
-            setCurrentReferences((prev) => [...prev, newRef]);
-            currentReferencesRef.current = [...currentReferencesRef.current, newRef];
-          },
-          // onMetadata（包含 kg_enhancement）
-          (metadata: Record<string, any>) => {
-            setKgMeta(metadata?.kg_enhancement || null);
-          },
-          // onDone
-          (meta: { used_retrieval: boolean; medical_analysis?: any }) => {
-            const finalResponse = currentResponseRef.current;
-            const finalRefs = [...currentReferencesRef.current];
+      const assistantMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        type: "assistant",
+        content: (data.answer || "_（空响应）_") + kgSummary,
+        timestamp: new Date(),
+        references: finalRefs.length ? finalRefs : undefined,
+      };
 
-            // 如果存在 KG 增强信息，追加一个总结消息
-            let kgSummary = "";
-            if (kgMeta) {
-              const entities = (kgMeta.extracted_entities || []).map((e: any) => e.name || e.entity || e).join(", ");
-              const related = (kgMeta.related_entities || []).map((r: any) => r.name || r.entity || r).join(", ");
-              const expansions = (kgMeta.suggested_expansions || []).join(", ");
-              kgSummary = [
-                "\n\n---\n",
-                "图谱增强信息：",
-                entities ? `\n• 识别实体：${entities}` : "",
-                related ? `\n• 相关实体：${related}` : "",
-                expansions ? `\n• 扩展建议：${expansions}` : "",
-              ].join("");
-            }
+      setMessages((prev) => [...prev, assistantMessage]);
+      setIsTyping(false);
 
-            const assistantMessage: Message = {
-              id: (Date.now() + 1).toString(),
-              type: "assistant",
-              content: (finalResponse || "_（空响应）_") + kgSummary,
-              timestamp: new Date(),
-              references: finalRefs.length ? finalRefs : undefined,
-            };
-
-            setMessages((prev) => [...prev, assistantMessage]);
-            setIsTyping(false);
-            setCurrentResponse("");
-            setCurrentReferences([]);
-            currentResponseRef.current = "";
-            currentReferencesRef.current = [];
-            citationIdsRef.current.clear();
-            setKgMeta(null);
-
-            if (meta?.used_retrieval) {
-              toast.success("基于医疗文档提供回答");
-            }
-            if (meta?.medical_analysis) {
-              toast.info("已进行医疗安全分析");
-            }
-            // 重新聚焦输入框
-            textareaRef.current?.focus();
-          },
-          // onError
-          (errText: string) => {
-            console.error("Medical chat error:", errText);
-            setIsTyping(false);
-            setCurrentResponse("");
-            setCurrentReferences([]);
-            currentResponseRef.current = "";
-            currentReferencesRef.current = [];
-            citationIdsRef.current.clear();
-            setKgMeta(null);
-
-            const errorMessage: Message = {
-              id: (Date.now() + 1).toString(),
-              type: "assistant",
-              content: `抱歉，处理您的医疗咨询时出现错误：${errText}`,
-              timestamp: new Date(),
-            };
-            setMessages((prev) => [...prev, errorMessage]);
-            toast.error("医疗咨询失败");
-          },
-          // sessionId
-          threadId,
-          // 医疗参数 - 让后端自动进行意图识别
-          undefined,  // department - 由后端意图识别自动推断
-          undefined,  // documentType - 由后端意图识别自动推断
-          undefined,  // diseaseCategory - 由后端意图识别自动推断
-        );
+      if (data.used_retrieval) {
+        toast.success("基于医疗文档提供回答");
+      }
+      if (data.quality_assessment) {
+        toast.info("已进行医疗安全分析");
+      }
       
+      // 重新聚焦输入框
+      textareaRef.current?.focus();
     } catch (e) {
       console.error("Chat request failed:", e);
       setIsTyping(false);
-      setCurrentResponse("");
-      setCurrentReferences([]);
-      currentResponseRef.current = "";
-      currentReferencesRef.current = [];
-      citationIdsRef.current.clear();
-      toast.error("Failed to send message");
+      
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        type: "assistant",
+        content: `抱歉，处理您的医疗咨询时出现错误：${e instanceof Error ? e.message : '未知错误'}`,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+      toast.error("医疗咨询失败");
     }
   };
 

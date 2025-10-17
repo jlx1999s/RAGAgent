@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os, asyncio, textwrap, logging
 from typing import List, Dict, Any, Tuple, AsyncGenerator, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 # 兼容导入 TypedDict（优先使用标准库typing，其次typing_extensions）
 try:
     from typing import TypedDict
@@ -39,12 +40,14 @@ from .medical_safety_service import MedicalReviewService, SafetyLevel, QualityLe
 from .enhanced_index_service import EnhancedMedicalIndexService
 from .medical_knowledge_graph import MedicalKnowledgeGraphService, kg_service
 from .medical_association_service import MedicalAssociationService, medical_association_service, AssociationType
+from .query_quality_assessor import query_quality_assessor
 from .medical_taxonomy import MedicalDepartment, DocumentType, DiseaseCategory
 from .state_store import (
     get_session_history as _get_session_history,
     append_session_history as _append_session_history,
     clear_session_history as _clear_session_history,
 )
+from .cache_service import cache_service
 
 # 会话历史改用 Redis/内存回退，通过 services.state_store 统一管理
 
@@ -109,8 +112,8 @@ class EnhancedMedicalRAGService:
         self.model_name = "qwen-plus"
         self.temperature = 0
         self.k = 5  # 增加检索数量以提高医疗问答质量
-        self.score_tau_top1 = 1.5  # 更严格的阈值
-        self.score_tau_mean3 = 2.0
+        self.score_tau_top1 = 2.0  # 放宽阈值以提高召回率
+        self.score_tau_mean3 = 2.5  # 放宽阈值以提高召回率
         
         # 医疗专用系统指令
         self.system_instruction = (
@@ -184,82 +187,561 @@ class EnhancedMedicalRAGService:
         question: str, 
         department: Optional[MedicalDepartment] = None,
         document_type: Optional[DocumentType] = None,
-        disease_category: Optional[DiseaseCategory] = None
+        disease_category: Optional[DiseaseCategory] = None,
+        intent_method: str = "smart",
+        session_id: Optional[str] = None
     ) -> tuple[list[dict], str, dict]:
         """
-        医疗检索功能
-        返回 (citations, context_text, metadata)
+        优化的医疗知识检索流程：意图识别 → 上下文感知KG增强 → 检索
         """
         try:
-            # 使用知识图谱增强查询
-            kg_enhancement = await self.kg_service.enhance_query_with_kg(question)
+            # 生成查询缓存键
+            cache_key = {
+                'question': question,
+                'department': department.value if department else None,
+                'document_type': document_type.value if document_type else None,
+                'disease_category': disease_category.value if disease_category else None,
+                'intent_method': intent_method,
+                'k': self.k
+            }
             
-            # 添加详细的KG增强日志
-            # 模块级日志记录器，保持与其它 services.* 一致的前缀
-            logger = logging.getLogger("services.enhanced_rag_service")
+            # 检查缓存
+            cached_result = cache_service.get('query_result', cache_key)
+            if cached_result:
+                logging.info("使用缓存的查询结果")
+                return cached_result
             
-            if kg_enhancement:
-                extracted_entities = kg_enhancement.get("extracted_entities", [])
-                related_entities = kg_enhancement.get("related_entities", [])
-                suggested_expansions = kg_enhancement.get("suggested_expansions", [])
-                 
-                logger.info(f"KG增强 - 识别实体: {[e.get('name', str(e)) if isinstance(e, dict) else str(e) for e in extracted_entities]}")
-                logger.info(f"KG增强 - 相关实体: {[r.get('name', str(r)) if isinstance(r, dict) else str(r) for r in related_entities]}")
-                logger.info(f"KG增强 - 扩展建议: {suggested_expansions}")
+            # 1. 智能意图识别（如果未提供department等参数）
+            intent_result = None
+            if not department and not document_type and not disease_category:
+                from .smart_intent_service import recognize_smart_medical_intent
+                from .qwen_intent_service import recognize_qwen_medical_intent
+                from .medical_intent_service import recognize_medical_intent
+                
+                if intent_method == "smart":
+                    intent = recognize_smart_medical_intent(question)
+                    department_str = intent.get('department')
+                    document_type_str = intent.get('document_type')
+                    disease_category_str = intent.get('disease_category')
+                    confidence = intent.get('confidence', 0.0)
+                    reasoning = intent.get('reasoning', '')
+                elif intent_method == "qwen":
+                    intent = recognize_qwen_medical_intent(question)
+                    department_str = intent.get('department')
+                    document_type_str = intent.get('document_type')
+                    disease_category_str = intent.get('disease_category')
+                    confidence = intent.get('confidence', 0.0)
+                    reasoning = intent.get('reasoning', '')
+                else:
+                    intent = recognize_medical_intent(question)
+                    department_str = intent.department
+                    document_type_str = intent.document_type
+                    disease_category_str = intent.disease_category
+                    confidence = getattr(intent, 'confidence', 0.0)
+                    reasoning = intent.reasoning
+                
+                # 转换为枚举类型
+                if department_str:
+                    try:
+                        department_mapping = {
+                            "呼吸内科": "呼吸科",
+                            "心内科": "心血管科",
+                            "消化内科": "消化科",
+                            "内分泌内科": "内分泌科",
+                            "肾脏内科": "肾内科",
+                            "预防科": "内科",
+                            "保健科": "内科"
+                        }
+                        mapped_dept = department_mapping.get(department_str, department_str)
+                        department = MedicalDepartment(mapped_dept)
+                    except ValueError:
+                        logging.warning(f"无效的科室参数: {department_str}")
+                
+                if document_type_str:
+                    try:
+                        doctype_mapping = {
+                            "预防指南": "临床指南",
+                            "诊疗指南": "临床指南",
+                            "治疗指南": "临床指南",
+                            "护理规范": "护理手册",
+                            "康复指导": "护理手册",
+                            "急救指南": "急救流程",
+                            "保健指南": "临床指南",
+                            "健康指南": "临床指南"
+                        }
+                        mapped_doctype = doctype_mapping.get(document_type_str, document_type_str)
+                        document_type = DocumentType(mapped_doctype)
+                    except ValueError:
+                        logging.warning(f"无效的文档类型参数: {document_type_str}")
+                
+                if disease_category_str:
+                    try:
+                        disease_category = DiseaseCategory(disease_category_str)
+                    except ValueError:
+                        logging.warning(f"无效的疾病分类参数: {disease_category_str}")
+                
+                intent_result = {
+                    'department': department_str,
+                    'document_type': document_type_str,
+                    'disease_category': disease_category_str,
+                    'confidence': confidence,
+                    'reasoning': reasoning,
+                    'method': intent_method
+                }
+                
+                logging.info(f"意图识别完成 - 科室: {department_str}, 文档类型: {document_type_str}, 疾病分类: {disease_category_str}")
+            
+            # 1.5. 查询质量评估
+            query_quality = query_quality_assessor.assess_query_quality(
+                question, 
+                context={
+                    'department': department.value if department else None,
+                    'document_type': document_type.value if document_type else None,
+                    'disease_category': disease_category.value if disease_category else None,
+                    'intent_confidence': intent_result.get('confidence', 0) if intent_result else 0,
+                    'session_id': session_id
+                }
+            )
+            
+            logging.info(f"查询质量评估 - 总分: {query_quality.overall_score:.3f}, 等级: {query_quality.quality_level.value}")
+            if query_quality.suggestions:
+                logging.info(f"改进建议: {', '.join(query_quality.suggestions)}")
+            
+            # 根据查询质量调整后续处理策略
+            quality_threshold = 0.6
+            use_enhanced_kg = query_quality.overall_score >= quality_threshold
+            
+            # 2. 上下文感知的知识图谱增强（基于意图识别结果和查询质量）
+            kg_enhanced_query = question
+            kg_entities = []
+            kg_relations = []
+            kg_suggestions = []
+            
+            if use_enhanced_kg:  # 只有在查询质量足够高时才进行KG增强
+                try:
+                    # 并行执行实体提取和KG增强
+                    async def run_kg_enhancement():
+                        with ThreadPoolExecutor(max_workers=2) as executor:
+                            # 检查实体提取缓存
+                            entity_cache_key = {'text': question}
+                            cached_entities = cache_service.get('entity_extraction', entity_cache_key)
+                            
+                            if cached_entities:
+                                extracted_entities = cached_entities
+                            else:
+                                # 提取医疗实体
+                                entities_future = executor.submit(
+                                    kg_service.extract_entities_from_text, question
+                                )
+                                extracted_entities = entities_future.result()
+                                # 缓存实体提取结果
+                                cache_service.set('entity_extraction', entity_cache_key, extracted_entities, ttl=600)
+                            
+                            kg_entities = [entity[0] for entity in extracted_entities]
+                            
+                            if extracted_entities:
+                                # 并行获取扩展建议和实体关系
+                                suggestions_futures = []
+                                relations_futures = []
+                                
+                                intent_confidence = intent_result.get('confidence', 0) if intent_result else 0
+                                
+                                # 为每个实体获取扩展建议
+                                for entity_name in kg_entities[:3]:  # 限制处理的实体数量
+                                    # 找到实体类型
+                                    entity_type = None
+                                    for ent_name, ent_type, _ in extracted_entities:
+                                        if ent_name == entity_name:
+                                            entity_type = ent_type
+                                            break
+                                    
+                                    if entity_type:
+                                        # 检查扩展建议缓存
+                                        suggestion_cache_key = {
+                                            'entity_name': entity_name,
+                                            'entity_type': entity_type,
+                                            'intent_confidence': intent_confidence
+                                        }
+                                        cached_suggestions = cache_service.get('kg_expansion', suggestion_cache_key)
+                                        
+                                        if cached_suggestions:
+                                            kg_suggestions.extend(cached_suggestions[:2])
+                                        else:
+                                            context = {
+                                                'intent': intent_result.intent if intent_result else None,
+                                                'confidence': intent_confidence
+                                            }
+                                            suggestions_future = executor.submit(
+                                                 kg_service.get_expansion_suggestions,
+                                                 entity_name, entity_type, context
+                                             )
+                                            suggestions_futures.append((suggestions_future, suggestion_cache_key))
+                                    
+                                    # 获取实体关系
+                                    relation_cache_key = {'entity_name': entity_name}
+                                    cached_relations = cache_service.get('entity_relations', relation_cache_key)
+                                    
+                                    if cached_relations:
+                                        kg_relations.extend(cached_relations[:2])
+                                    else:
+                                        entities_found = kg_service.find_entities_by_name(entity_name)
+                                        if entities_found:
+                                            entity_id = entities_found[0].id
+                                            relations_future = executor.submit(
+                                                 kg_service.get_related_entities,
+                                                 entity_id, max_depth=1
+                                             )
+                                            relations_futures.append((relations_future, relation_cache_key))
+                                
+                                # 收集扩展建议结果
+                                for future, cache_key in suggestions_futures:
+                                    try:
+                                        suggestions = future.result()
+                                        if suggestions:
+                                            kg_suggestions.extend(suggestions[:2])
+                                            cache_service.set('kg_expansion', cache_key, suggestions, ttl=600)
+                                    except Exception as e:
+                                        logging.warning(f"获取KG扩展建议失败: {e}")
+                                
+                                # 收集实体关系结果
+                                for future, cache_key in relations_futures:
+                                    try:
+                                        relations = future.result()
+                                        if relations:
+                                            for depth_key, relations_list in relations.items():
+                                                relation_names = [rel[0].name for rel in relations_list[:2]]
+                                                kg_relations.extend(relation_names)
+                                                cache_service.set('entity_relations', cache_key, relation_names, ttl=600)
+                                    except Exception as e:
+                                        logging.warning(f"获取实体关系失败: {e}")
+                            
+                            return kg_entities, kg_relations, kg_suggestions
+                    
+                    # 执行KG增强
+                    kg_entities, kg_relations, kg_suggestions = await run_kg_enhancement()
+                    
+                    # 构建上下文感知的增强查询
+                    if kg_suggestions:
+                        # 根据意图识别的置信度和查询质量调整扩展词数量
+                        intent_confidence = intent_result.get('confidence', 0) if intent_result else 0
+                        max_suggestions = 3 if (intent_confidence > 0.7 and query_quality.overall_score > 0.7) else 2
+                        kg_enhanced_query = f"{question} {' '.join(kg_suggestions[:max_suggestions])}"
+                    
+                    logging.info(f"上下文感知KG增强 - 实体: {len(kg_entities)}, 相关实体: {len(kg_relations)}, 扩展建议: {len(kg_suggestions)}")
+                    
+                except Exception as kg_error:
+                    logging.warning(f"KG增强失败: {kg_error}")
+                    use_enhanced_kg = False
             else:
-                logging.warning("知识图谱增强未返回结果")
+                logging.info("查询质量较低，跳过KG增强")
             
-            # 查找相关医疗关联
-            associations = self.association_service.find_associations(
-                query=question,
-                confidence_threshold=0.6,
-                max_results=10
-            )
+            # 3. 医疗关联增强（基于意图识别结果和查询质量优化）
+            medical_associations = []
             
-            # 构建增强后的查询
-            enhanced_query = question
-            if kg_enhancement.get("suggested_expansions"):
-                # 添加相关实体到查询中
-                expansions = kg_enhancement["suggested_expansions"][:3]  # 限制扩展数量
-                enhanced_query += " " + " ".join(expansions)
-                logging.info(f"增强查询添加扩展: {' '.join(expansions)}")
+            if use_enhanced_kg:  # 只有在查询质量足够高时才进行医疗关联增强
+                try:
+                    # 检查医疗关联缓存
+                    association_cache_key = {
+                        'question': question,
+                        'department': department.value if department else None,
+                        'document_type': document_type.value if document_type else None,
+                        'disease_category': disease_category.value if disease_category else None
+                    }
+                    
+                    cached_associations = cache_service.get('medical_associations', association_cache_key)
+                    if cached_associations:
+                        medical_associations = cached_associations
+                        logging.info(f"使用缓存的医疗关联: {len(medical_associations)}个")
+                    else:
+                        # 并行获取医疗关联
+                        async def get_medical_associations():
+                            with ThreadPoolExecutor(max_workers=1) as executor:
+                                future = executor.submit(
+                                     medical_association_service.find_associations,
+                                     question,
+                                     {
+                                         'department': department.value if department else None,
+                                         'document_type': document_type.value if document_type else None,
+                                         'disease_category': disease_category.value if disease_category else None
+                                     }
+                                 )
+                                associations = future.result()
+                                return [
+                                    {
+                                        "source": assoc.source_entity,
+                                        "target": assoc.target_entity,
+                                        "type": assoc.association_type.value,
+                                        "confidence": assoc.confidence,
+                                        "description": assoc.description
+                                    }
+                                    for assoc in associations
+                                ]
+                        
+                        medical_associations = await get_medical_associations()
+                        
+                        # 缓存医疗关联结果
+                        cache_service.set('medical_associations', association_cache_key, medical_associations, ttl=600)
+                        
+                        logging.info(f"医疗关联增强完成 - 关联数: {len(medical_associations)}")
+                    
+                    # 将关联信息添加到查询中，根据意图识别置信度和查询质量调整数量
+                    if medical_associations:
+                        intent_confidence = intent_result.get('confidence', 0) if intent_result else 0
+                        max_associations = 3 if (intent_confidence > 0.7 and query_quality.overall_score > 0.7) else 2
+                        association_terms = [assoc["target"] for assoc in medical_associations[:max_associations]]
+                        kg_enhanced_query = f"{kg_enhanced_query} {' '.join(association_terms)}"
+                    
+                    logging.info(f"上下文感知医疗关联增强 - 找到 {len(medical_associations)} 个关联")
+                    
+                except Exception as assoc_error:
+                    logging.warning(f"医疗关联增强失败: {assoc_error}")
+            else:
+                logging.info("查询质量较低，跳过医疗关联增强")
             
-            # 基于关联扩展查询
-            association_terms = []
-            for assoc in associations.associations[:5]:  # 取前5个最相关的关联
-                association_terms.extend([assoc.source, assoc.target])
+            # 4. 执行增强的医疗搜索
+            # 根据查询质量调整搜索参数
+            search_k = self.k if query_quality.overall_score > 0.7 else max(3, self.k - 2)
+            score_threshold = 0.3 if query_quality.overall_score > 0.7 else 0.5
             
-            if association_terms:
-                association_query = " ".join(set(association_terms))
-                enhanced_query = f"{enhanced_query} {association_query}"
-                logging.info(f"增强查询添加关联词: {association_query}")
+            # 确保kg_enhanced_query已定义
+            if 'kg_enhanced_query' not in locals():
+                kg_enhanced_query = question
             
-            logging.info(f"最终增强查询: {enhanced_query}")
+            # 转换意图识别结果为枚举类型
+            dept_enum = None
+            doc_type_enum = None
+            disease_cat_enum = None
             
-            # 使用增强的医疗搜索
+            if intent_result and intent_result.get('department'):
+                try:
+                    dept_enum = MedicalDepartment(intent_result['department'])
+                except ValueError:
+                    pass
+            
+            if intent_result and intent_result.get('document_type'):
+                try:
+                    doc_type_enum = DocumentType(intent_result['document_type'])
+                except ValueError:
+                    pass
+            
+            if intent_result and intent_result.get('disease_category'):
+                try:
+                    disease_cat_enum = DiseaseCategory(intent_result['disease_category'])
+                except ValueError:
+                    pass
+            
+            # 如果没有意图识别结果，使用传入的参数
+            if not dept_enum:
+                dept_enum = department
+            if not doc_type_enum:
+                doc_type_enum = document_type
+            if not disease_cat_enum:
+                disease_cat_enum = disease_category
+            
             search_results = self.index_service.search_medical_documents(
-                query=enhanced_query,
-                department=department.value if department else None,
-                document_type=document_type.value if document_type else None,
-                disease_category=disease_category.value if disease_category else None,
-                k=self.k
+                query=kg_enhanced_query,
+                department=dept_enum,
+                document_type=doc_type_enum,
+                disease_category=disease_cat_enum,
+                k=search_k,
+                score_threshold=score_threshold
             )
             
+            # 5. 动态权重调整和结果处理
             citations = []
             ctx_snippets = []
             scores = []
             
+            # 检查search_results是否为None
+            if search_results is None:
+                return [], "", {
+                    "error": "搜索服务返回空结果",
+                    "intent_recognition": intent_result,
+                    "query_quality": {
+                        "overall_score": query_quality.overall_score,
+                        "level": query_quality.quality_level.value,
+                        "clarity_score": query_quality.clarity_score,
+                        "specificity_score": query_quality.specificity_score,
+                        "medical_relevance": query_quality.medical_relevance,
+                        "completeness_score": query_quality.completeness_score,
+                        "complexity_score": query_quality.complexity_score,
+                        "suggestions": query_quality.suggestions
+                    }
+                }
+            
             # 检查搜索结果
             if not search_results.get("ok", False):
-                return [], "", {"error": search_results.get("error", "搜索失败")}
+                return [], "", {
+                    "error": search_results.get("error", "搜索失败"),
+                    "intent_recognition": intent_result,
+                    "query_quality": {
+                        "overall_score": query_quality.overall_score,
+                        "level": query_quality.quality_level.value,
+                        "clarity_score": query_quality.clarity_score,
+                        "specificity_score": query_quality.specificity_score,
+                        "medical_relevance": query_quality.medical_relevance,
+                        "completeness_score": query_quality.completeness_score,
+                        "complexity_score": query_quality.complexity_score,
+                        "suggestions": query_quality.suggestions
+                    },
+                    "kg_enhancement": {
+                        "enabled": use_enhanced_kg,
+                        "entities": kg_entities if 'kg_entities' in locals() else [],
+                        "relations": kg_relations if 'kg_relations' in locals() else [],
+                        "suggestions": kg_suggestions if 'kg_suggestions' in locals() else []
+                    },
+                    "medical_associations": medical_associations
+                }
+            
+            # 动态权重调整逻辑
+            def calculate_dynamic_weights(query_quality, intent_result, kg_enhancement_used, medical_associations_count):
+                """根据查询质量和增强效果动态调整权重"""
+                base_weights = {
+                    'semantic_similarity': 0.4,
+                    'medical_relevance': 0.3,
+                    'kg_enhancement': 0.2,
+                    'medical_associations': 0.1
+                }
+                
+                # 根据查询质量调整
+                quality_factor = query_quality.overall_score
+                if quality_factor > 0.8:
+                    # 高质量查询，增加语义相似度权重
+                    base_weights['semantic_similarity'] += 0.1
+                    base_weights['medical_relevance'] -= 0.05
+                    base_weights['kg_enhancement'] -= 0.05
+                elif quality_factor < 0.5:
+                    # 低质量查询，增加医疗相关性权重
+                    base_weights['medical_relevance'] += 0.15
+                    base_weights['semantic_similarity'] -= 0.1
+                    base_weights['kg_enhancement'] -= 0.05
+                
+                # 根据意图识别置信度调整
+                if intent_result and intent_result.get('confidence', 0) > 0.8:
+                    base_weights['medical_relevance'] += 0.1
+                    base_weights['semantic_similarity'] -= 0.1
+                
+                # 根据KG增强效果调整
+                if kg_enhancement_used and len(kg_suggestions) > 0:
+                    base_weights['kg_enhancement'] += 0.1
+                    base_weights['semantic_similarity'] -= 0.05
+                    base_weights['medical_relevance'] -= 0.05
+                
+                # 根据医疗关联数量调整
+                if medical_associations_count > 3:
+                    base_weights['medical_associations'] += 0.05
+                    base_weights['semantic_similarity'] -= 0.05
+                
+                # 确保权重和为1
+                total_weight = sum(base_weights.values())
+                for key in base_weights:
+                    base_weights[key] /= total_weight
+                
+                return base_weights
+            
+            # 计算动态权重
+            dynamic_weights = calculate_dynamic_weights(
+                query_quality, 
+                intent_result, 
+                use_enhanced_kg and len(kg_suggestions) > 0,
+                len(medical_associations)
+            )
+            
+            # 再次检查search_results是否为None（防御性编程）
+            if search_results is None:
+                return [], "", {
+                    "error": "搜索结果为空",
+                    "intent_recognition": intent_result,
+                    "query_quality": {
+                        "overall_score": query_quality.overall_score,
+                        "level": query_quality.quality_level.value,
+                        "clarity_score": query_quality.clarity_score,
+                        "specificity_score": query_quality.specificity_score,
+                        "medical_relevance": query_quality.medical_relevance,
+                        "completeness_score": query_quality.completeness_score,
+                        "complexity_score": query_quality.complexity_score,
+                        "suggestions": query_quality.suggestions
+                    }
+                }
             
             results_list = search_results.get("results", [])
+            
+            # 应用动态权重调整结果排序
+            def calculate_weighted_score(result, weights):
+                """根据动态权重计算加权分数"""
+                base_score = result.get("score", 0.0)
+                
+                # 语义相似度分数（基础分数）
+                semantic_score = base_score * weights['semantic_similarity']
+                
+                # 医疗相关性分数（基于元数据）
+                medical_score = 0.0
+                metadata = result.get("metadata", {})
+                if metadata.get("department"):
+                    medical_score += 0.3
+                if metadata.get("evidence_level") in ["A", "B"]:
+                    medical_score += 0.4
+                if metadata.get("document_type") in ["guideline", "protocol"]:
+                    medical_score += 0.3
+                medical_score *= weights['medical_relevance']
+                
+                # KG增强分数
+                kg_score = 0.0
+                if use_enhanced_kg and kg_suggestions:
+                    text_lower = result.get("text", "").lower()
+                    for suggestion in kg_suggestions:
+                        if suggestion.lower() in text_lower:
+                            kg_score += 0.2
+                kg_score = min(kg_score, 1.0) * weights['kg_enhancement']
+                
+                # 医疗关联分数
+                association_score = 0.0
+                if medical_associations:
+                    text_lower = result.get("text", "").lower()
+                    for association in medical_associations:
+                        # 处理字典格式的关联数据
+                        if isinstance(association, dict):
+                            target = association.get("target", "")
+                            if target and target.lower() in text_lower:
+                                association_score += 0.15
+                        elif isinstance(association, str):
+                            if association.lower() in text_lower:
+                                association_score += 0.15
+                association_score = min(association_score, 1.0) * weights['medical_associations']
+                
+                return semantic_score + medical_score + kg_score + association_score
+            
+            # 重新排序结果
+            for result in results_list:
+                result["weighted_score"] = calculate_weighted_score(result, dynamic_weights)
+            
+            # 按加权分数排序
+            results_list.sort(key=lambda x: x["weighted_score"], reverse=True)
+            
             metadata = {
                 "total_results": len(results_list),
                 "departments": set(),
                 "document_types": set(),
                 "evidence_levels": set(),
-                "kg_enhancement": kg_enhancement
+                "intent_recognition": intent_result,
+                "query_quality": {
+                    "overall_score": query_quality.overall_score,
+                    "level": query_quality.quality_level.value,
+                    "clarity_score": query_quality.clarity_score,
+                    "specificity_score": query_quality.specificity_score,
+                    "medical_relevance": query_quality.medical_relevance,
+                    "completeness_score": query_quality.completeness_score,
+                    "complexity_score": query_quality.complexity_score,
+                    "suggestions": query_quality.suggestions
+                },
+                "kg_enhancement": {
+                    "enabled": use_enhanced_kg,
+                    "entities": kg_entities if 'kg_entities' in locals() else [],
+                    "relations": kg_relations if 'kg_relations' in locals() else [],
+                    "suggestions": kg_suggestions if 'kg_suggestions' in locals() else []
+                },
+                "medical_associations": medical_associations,
+                "dynamic_weights": dynamic_weights
             }
             
             for i, result in enumerate(results_list, start=1):
@@ -302,26 +784,27 @@ class EnhancedMedicalRAGService:
             
             context_text = "\n\n".join(ctx_snippets) if ctx_snippets else "(no medical documents found)"
             
-            # 添加医疗关联信息到元数据
-            metadata["medical_associations"] = {
-                "total_found": associations.total_count,
-                "associations": [
-                    {
-                        "source": assoc.source,
-                        "target": assoc.target,
-                        "type": assoc.association_type.value,
-                        "confidence": assoc.confidence
-                    }
-                    for assoc in associations.associations[:5]
-                ]
-            }
-            
             # 转换set为list以便JSON序列化
             metadata["departments"] = list(metadata["departments"])
             metadata["document_types"] = list(metadata["document_types"])
             metadata["evidence_levels"] = list(metadata["evidence_levels"])
             
-            return citations, context_text, metadata
+            # 确保kg_enhancement字段存在
+            if "kg_enhancement" not in metadata:
+                metadata["kg_enhancement"] = {
+                    "enabled": False,
+                    "entities": [],
+                    "relations": [],
+                    "suggestions": []
+                }
+            
+            # 构建最终结果
+            final_result = (citations, context_text, metadata)
+            
+            # 缓存结果
+            cache_service.set('query_result', cache_key, final_result, ttl=300)  # 缓存5分钟
+            
+            return final_result
             
         except Exception as e:
             print(f"Error in medical_retrieve: {e}")

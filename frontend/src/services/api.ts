@@ -589,6 +589,66 @@ export async function processMedicalChatStream(
   return abortController;
 }
 
+// 非流式医疗问答API
+export async function medicalQA(
+  message: string,
+  sessionId = 'medical_default',
+  department?: string,
+  documentType?: string,
+  diseaseCategory?: string,
+  enableSafetyCheck = true,
+  intentRecognitionMethod = 'smart'
+): Promise<{
+  ok: boolean;
+  data: {
+    answer: string;
+    citations: Array<{
+      citation_id: string;
+      fileId: string;
+      rank: number;
+      page: number;
+      previewUrl: string;
+      snippet?: string;
+    }>;
+    metadata: Record<string, any>;
+    quality_assessment: any;
+    safety_warning: any;
+    used_retrieval: boolean;
+    intent: {
+      department: string;
+      document_type: string;
+      disease_category: string;
+      confidence: number;
+      reasoning: string;
+      method: string;
+    };
+    session_id: string;
+  };
+  error?: string;
+}> {
+  const response = await fetch(`${API_BASE_URL}/medical/qa`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      message,
+      sessionId,
+      department,
+      documentType,
+      diseaseCategory,
+      enableSafetyCheck,
+      intentRecognitionMethod,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Medical QA failed: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
 // 症状分析
 export async function analyzeSymptoms(
   symptoms: string[],
