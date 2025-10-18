@@ -596,6 +596,15 @@ class DeleteIndexRequest(BaseModel):
     documentType: str
     diseaseCategory: Optional[str] = None
 
+class BatchDeleteRequest(BaseModel):
+    storeIds: List[str]
+
+class DeleteByDepartmentRequest(BaseModel):
+    department: str
+
+class DeleteByDocumentTypeRequest(BaseModel):
+    documentType: str
+
 @app.post(f"{API_PREFIX}/medical/index/delete", tags=["Medical Index"])
 async def medical_index_delete(req: DeleteIndexRequest):
     """删除指定的医疗文档索引"""
@@ -605,6 +614,42 @@ async def medical_index_delete(req: DeleteIndexRequest):
             document_type=req.documentType,
             disease_category=req.diseaseCategory
         )
+        return result
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post(f"{API_PREFIX}/medical/index/delete/batch", tags=["Medical Index"])
+async def medical_index_delete_batch(req: BatchDeleteRequest):
+    """批量删除指定的医疗文档索引"""
+    try:
+        result = enhanced_index_service.delete_multiple_stores(req.storeIds)
+        return result
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post(f"{API_PREFIX}/medical/index/delete/department", tags=["Medical Index"])
+async def medical_index_delete_by_department(req: DeleteByDepartmentRequest):
+    """删除指定科室的所有医疗文档索引"""
+    try:
+        result = enhanced_index_service.delete_stores_by_department(req.department)
+        return result
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post(f"{API_PREFIX}/medical/index/delete/document-type", tags=["Medical Index"])
+async def medical_index_delete_by_document_type(req: DeleteByDocumentTypeRequest):
+    """删除指定文档类型的所有医疗文档索引"""
+    try:
+        result = enhanced_index_service.delete_stores_by_document_type(req.documentType)
+        return result
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post(f"{API_PREFIX}/medical/index/clear-all", tags=["Medical Index"])
+async def medical_index_clear_all():
+    """清空所有医疗知识库"""
+    try:
+        result = enhanced_index_service.clear_all_knowledge_base()
         return result
     except Exception as e:
         return {"ok": False, "error": str(e)}

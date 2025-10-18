@@ -349,6 +349,155 @@ class MedicalVectorStoreManager:
             logger.error(f"删除向量存储 {store_key} 失败: {e}")
             return False
     
+    def delete_stores_by_department(self, department: MedicalDepartment) -> Dict[str, Any]:
+        """删除指定科室的所有向量存储"""
+        deleted_stores = []
+        failed_stores = []
+        
+        # 找到所有匹配的存储
+        stores_to_delete = []
+        for store_key, metadata in self.metadata_cache.items():
+            if metadata.department == department:
+                stores_to_delete.append(store_key)
+        
+        # 执行删除
+        for store_key in stores_to_delete:
+            try:
+                metadata = self.metadata_cache[store_key]
+                success = self.delete_store(
+                    metadata.department,
+                    metadata.document_type,
+                    metadata.disease_category
+                )
+                if success:
+                    deleted_stores.append(store_key)
+                else:
+                    failed_stores.append(store_key)
+            except Exception as e:
+                logger.error(f"删除存储 {store_key} 失败: {e}")
+                failed_stores.append(store_key)
+        
+        return {
+            "deleted_count": len(deleted_stores),
+            "failed_count": len(failed_stores),
+            "deleted_stores": deleted_stores,
+            "failed_stores": failed_stores
+        }
+    
+    def delete_stores_by_document_type(self, document_type: DocumentType) -> Dict[str, Any]:
+        """删除指定文档类型的所有向量存储"""
+        deleted_stores = []
+        failed_stores = []
+        
+        # 找到所有匹配的存储
+        stores_to_delete = []
+        for store_key, metadata in self.metadata_cache.items():
+            if metadata.document_type == document_type:
+                stores_to_delete.append(store_key)
+        
+        # 执行删除
+        for store_key in stores_to_delete:
+            try:
+                metadata = self.metadata_cache[store_key]
+                success = self.delete_store(
+                    metadata.department,
+                    metadata.document_type,
+                    metadata.disease_category
+                )
+                if success:
+                    deleted_stores.append(store_key)
+                else:
+                    failed_stores.append(store_key)
+            except Exception as e:
+                logger.error(f"删除存储 {store_key} 失败: {e}")
+                failed_stores.append(store_key)
+        
+        return {
+            "deleted_count": len(deleted_stores),
+            "failed_count": len(failed_stores),
+            "deleted_stores": deleted_stores,
+            "failed_stores": failed_stores
+        }
+    
+    def clear_all_stores(self) -> Dict[str, Any]:
+        """清空所有向量存储"""
+        deleted_stores = []
+        failed_stores = []
+        
+        # 获取所有存储的副本（避免在迭代时修改字典）
+        all_store_keys = list(self.metadata_cache.keys())
+        
+        for store_key in all_store_keys:
+            try:
+                metadata = self.metadata_cache[store_key]
+                success = self.delete_store(
+                    metadata.department,
+                    metadata.document_type,
+                    metadata.disease_category
+                )
+                if success:
+                    deleted_stores.append(store_key)
+                else:
+                    failed_stores.append(store_key)
+            except Exception as e:
+                logger.error(f"删除存储 {store_key} 失败: {e}")
+                failed_stores.append(store_key)
+        
+        # 清理基础目录（如果所有存储都删除成功）
+        if len(failed_stores) == 0:
+            try:
+                import shutil
+                if self.base_path.exists():
+                    # 重新创建空目录
+                    shutil.rmtree(self.base_path)
+                    self.base_path.mkdir(parents=True, exist_ok=True)
+                logger.info("已清空所有向量存储目录")
+            except Exception as e:
+                logger.error(f"清空存储目录失败: {e}")
+        
+        return {
+            "deleted_count": len(deleted_stores),
+            "failed_count": len(failed_stores),
+            "deleted_stores": deleted_stores,
+            "failed_stores": failed_stores,
+            "total_processed": len(all_store_keys)
+        }
+    
+    def delete_multiple_stores(self, store_ids: List[str]) -> Dict[str, Any]:
+        """批量删除指定的向量存储"""
+        deleted_stores = []
+        failed_stores = []
+        not_found_stores = []
+        
+        for store_id in store_ids:
+            if store_id not in self.metadata_cache:
+                not_found_stores.append(store_id)
+                continue
+                
+            try:
+                metadata = self.metadata_cache[store_id]
+                success = self.delete_store(
+                    metadata.department,
+                    metadata.document_type,
+                    metadata.disease_category
+                )
+                if success:
+                    deleted_stores.append(store_id)
+                else:
+                    failed_stores.append(store_id)
+            except Exception as e:
+                logger.error(f"删除存储 {store_id} 失败: {e}")
+                failed_stores.append(store_id)
+        
+        return {
+            "deleted_count": len(deleted_stores),
+            "failed_count": len(failed_stores),
+            "not_found_count": len(not_found_stores),
+            "deleted_stores": deleted_stores,
+            "failed_stores": failed_stores,
+            "not_found_stores": not_found_stores
+        }
+
     def optimize_stores(self):
         """优化向量存储（合并小存储、重建索引等）"""
         logger.info("开始优化向量存储...")

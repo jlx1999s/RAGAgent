@@ -287,6 +287,79 @@ class EnhancedMedicalIndexService:
             logger.error(f"删除索引时发生错误: {e}")
             return {"ok": False, "error": str(e)}
     
+    def delete_stores_by_department(self, department: str) -> Dict[str, Any]:
+        """删除指定科室的所有向量存储"""
+        try:
+            dept_enum = MedicalDepartment(department)
+            result = self.vector_store_manager.delete_stores_by_department(dept_enum)
+            
+            return {
+                "ok": True,
+                "deleted_count": result["deleted_count"],
+                "failed_count": result["failed_count"],
+                "deleted_stores": result["deleted_stores"],
+                "failed_stores": result["failed_stores"]
+            }
+        except ValueError:
+            return {"ok": False, "error": f"INVALID_DEPARTMENT: {department}"}
+        except Exception as e:
+            logger.error(f"删除科室 {department} 的存储失败: {e}")
+            return {"ok": False, "error": str(e)}
+    
+    def delete_stores_by_document_type(self, document_type: str) -> Dict[str, Any]:
+        """删除指定文档类型的所有向量存储"""
+        try:
+            doc_type_enum = DocumentType(document_type)
+            result = self.vector_store_manager.delete_stores_by_document_type(doc_type_enum)
+            
+            return {
+                "ok": True,
+                "deleted_count": result["deleted_count"],
+                "failed_count": result["failed_count"],
+                "deleted_stores": result["deleted_stores"],
+                "failed_stores": result["failed_stores"]
+            }
+        except ValueError:
+            return {"ok": False, "error": f"INVALID_DOCUMENT_TYPE: {document_type}"}
+        except Exception as e:
+            logger.error(f"删除文档类型 {document_type} 的存储失败: {e}")
+            return {"ok": False, "error": str(e)}
+    
+    def clear_all_knowledge_base(self) -> Dict[str, Any]:
+        """清空所有知识库"""
+        try:
+            result = self.vector_store_manager.clear_all_stores()
+            
+            return {
+                "ok": True,
+                "deleted_count": result["deleted_count"],
+                "failed_count": result["failed_count"],
+                "total_processed": result["total_processed"],
+                "deleted_stores": result["deleted_stores"],
+                "failed_stores": result["failed_stores"]
+            }
+        except Exception as e:
+            logger.error(f"清空所有知识库失败: {e}")
+            return {"ok": False, "error": str(e)}
+    
+    def delete_multiple_stores(self, store_ids: List[str]) -> Dict[str, Any]:
+        """批量删除指定的向量存储"""
+        try:
+            result = self.vector_store_manager.delete_multiple_stores(store_ids)
+            
+            return {
+                "ok": True,
+                "deleted_count": result["deleted_count"],
+                "failed_count": result["failed_count"],
+                "not_found_count": result["not_found_count"],
+                "deleted_stores": result["deleted_stores"],
+                "failed_stores": result["failed_stores"],
+                "not_found_stores": result["not_found_stores"]
+            }
+        except Exception as e:
+            logger.error(f"批量删除存储失败: {e}")
+            return {"ok": False, "error": str(e)}
+
     def optimize_vector_stores(self) -> Dict[str, Any]:
         """优化向量存储"""
         try:
