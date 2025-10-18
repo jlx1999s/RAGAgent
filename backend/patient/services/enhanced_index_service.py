@@ -25,7 +25,7 @@ class EnhancedMedicalIndexService:
     """增强的医疗索引服务"""
     
     def __init__(self, 
-                 vector_store_base_path: str = "data/vector_stores",
+                 vector_store_base_path: str = "../data/vector_stores",
                  embeddings: Optional[Embeddings] = None):
         
         # 初始化组件
