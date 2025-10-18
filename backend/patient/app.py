@@ -401,7 +401,7 @@ async def medical_index_build(req: MedicalIndexRequest):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-# 医疗关联查询API端点
+# 医疗关联搜索API
 @app.post(f"{API_PREFIX}/medical/associations/search", tags=["Medical Associations"])
 async def search_medical_associations(req: AssociationSearchRequest):
     """搜索医疗关联"""
@@ -896,3 +896,7 @@ async def enhance_query_with_kg(req: ChatRequest):
         return {"ok": True, "data": enhancement}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)

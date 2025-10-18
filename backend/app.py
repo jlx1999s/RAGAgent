@@ -891,3 +891,7 @@ async def enhance_query_with_kg(req: ChatRequest):
         return {"ok": True, "data": enhancement}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

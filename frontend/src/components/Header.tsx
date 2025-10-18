@@ -1,7 +1,7 @@
 import { useState, useEffect, RefObject } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { getMedicalStatistics } from '../services/api';
-import { Database, FileText, Building2, Home, Settings } from 'lucide-react';
+import { Database, FileText, Building2, Home, Settings, UserCheck, Users } from 'lucide-react';
 import { Button } from './ui/button';
 
 interface MedicalStats {
@@ -13,9 +13,11 @@ interface MedicalStats {
 
 interface HeaderProps {
   refreshStatsRef: RefObject<(() => void) | undefined>;
+  userRole?: 'doctor' | 'patient';
+  onRoleChange?: (role: 'doctor' | 'patient') => void;
 }
 
-export function Header({ refreshStatsRef }: HeaderProps) {
+export function Header({ refreshStatsRef, userRole = 'doctor', onRoleChange }: HeaderProps) {
   const [stats, setStats] = useState<MedicalStats | null>(null);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
@@ -78,7 +80,9 @@ export function Header({ refreshStatsRef }: HeaderProps) {
           {/* Center - Title and Author on same line */}
           <div className="text-center flex-1">
             <h1 className="text-4xl font-bold tracking-wide" style={{ fontFamily: '"Space Grotesk", system-ui, sans-serif' }}>
-              <span className="bg-gradient-to-r from-blue-400 via-purple-400 to-cyan-400 bg-clip-text text-transparent drop-shadow-lg font-bold text-[32px] font-[Rubik_Dirt]">医疗多模态RAG检索系统</span> 
+              <span className="bg-gradient-to-r from-blue-400 via-purple-400 to-cyan-400 bg-clip-text text-transparent drop-shadow-lg font-bold text-[32px] font-[Rubik_Dirt]">
+                医疗多模态RAG检索系统 - {userRole === 'doctor' ? '医生端' : '患者端'}
+              </span> 
               <span className="text-lg text-muted-foreground/80 tracking-wider font-light" style={{ fontFamily: '"Space Grotesk", system-ui, sans-serif' }}>by </span>
               <span className="text-lg text-gradient-gold font-semibold tracking-wider" style={{ fontFamily: '"Space Grotesk", system-ui, sans-serif' }}>j</span>
             </h1>
@@ -86,6 +90,30 @@ export function Header({ refreshStatsRef }: HeaderProps) {
 
           {/* Right side - Navigation */}
           <div className="w-48 flex justify-end space-x-2">
+            {/* 角色切换按钮 */}
+            {onRoleChange && (
+              <div className="flex space-x-1 mr-2">
+                <Button
+                  variant={userRole === 'doctor' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => onRoleChange('doctor')}
+                  className="flex items-center space-x-1 px-2"
+                >
+                  <UserCheck className="w-4 h-4" />
+                  <span>医生</span>
+                </Button>
+                <Button
+                  variant={userRole === 'patient' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => onRoleChange('patient')}
+                  className="flex items-center space-x-1 px-2"
+                >
+                  <Users className="w-4 h-4" />
+                  <span>患者</span>
+                </Button>
+              </div>
+            )}
+            
             <Button
               variant={location.pathname === '/' ? 'default' : 'outline'}
               size="sm"

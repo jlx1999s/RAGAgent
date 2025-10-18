@@ -6,6 +6,7 @@ import { PDFPanel } from "./components/PDFPanel";
 import { KnowledgeBaseManagement } from "./components/KnowledgeBaseManagement";
 import MinimalMedicalChat from "./components/MinimalMedicalChat";
 import { Toaster } from "./components/ui/sonner";
+import { setUserRole, getUserRole } from './services/api';
 
 export default function App() {
   const [chatKey, setChatKey] = useState(0);
@@ -13,9 +14,31 @@ export default function App() {
   const [currentFileName, setCurrentFileName] = useState<string>('');
   const [currentTotalPages, setCurrentTotalPages] = useState<number>(0);
   const refreshStatsRef = useRef<(() => void) | undefined>(undefined);
+  
+  // 添加用户角色状态管理
+  const [userRole, setUserRoleState] = useState<'doctor' | 'patient'>(() => {
+    return getUserRole();
+  });
+
+  // 为每个聊天会话生成唯一的threadId
+  const [threadId, setThreadId] = useState<string>(() => {
+    return `${userRole}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  });
+
+  // 处理角色切换
+  const handleRoleChange = (newRole: 'doctor' | 'patient') => {
+    setUserRoleState(newRole);
+    setUserRole(newRole);
+    // 重置聊天界面以清除之前的对话
+    setChatKey(prev => prev + 1);
+    // 为新角色生成新的threadId
+    setThreadId(`${newRole}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
+  };
 
   const handleClearChat = () => {
     setChatKey((prev) => prev + 1);
+    // 清除聊天时生成新的threadId
+    setThreadId(`${userRole}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
   };
 
   const handleFileReady = (fileId: string, fileName: string, totalPages: number) => {
@@ -74,7 +97,11 @@ export default function App() {
           <div className="h-screen flex flex-col">
             {/* Header with reduced bottom margin */}
             <div className="max-w-7xl mx-auto w-full">
-              <Header refreshStatsRef={refreshStatsRef} />
+              <Header 
+                refreshStatsRef={refreshStatsRef} 
+                userRole={userRole}
+                onRoleChange={handleRoleChange}
+              />
             </div>
 
             {/* Main Content - Routes */}
@@ -90,6 +117,7 @@ export default function App() {
                         onClearChat={handleClearChat}
                         fileId={currentFileId}
                         fileName={currentFileName}
+                        threadId={threadId}
                       />
                     </div>
 
