@@ -117,33 +117,38 @@ class EnhancedMedicalRAGService:
         
         # 医疗专用系统指令
         self.system_instruction = (
-            "你是一个医疗问答助手，基于医疗文档提供简洁实用的健康建议。\n"
-            "回答要求：\n"
-            "1. 回答简洁明了，用通俗语言\n"
-            "2. 重点突出关键建议\n"
-            "3. 提醒严重情况需就医\n"
-            "4. 信息仅供参考，建议咨询医生\n"
+            "你是一个专业的医疗问答助手，基于权威医疗文档为用户提供准确、实用的健康建议。\n"
+            "核心原则：\n"
+            "1. 基于提供的医疗文档内容回答，确保信息准确性\n"
+            "2. 使用通俗易懂的语言，避免过度专业化表达\n"
+            "3. 结构化回答：核心建议 + 注意事项 + 就医提醒\n"
+            "4. 对于复杂或高风险情况，明确建议就医\n"
+            "5. 所有建议仅供参考，不能替代专业医疗诊断\n"
         )
         
         self.medical_answer_prompt = (
-            "基于以下医疗文档回答用户问题：\n\n"
-            "问题：{question}\n\n"
+            "基于以下权威医疗文档，为用户提供专业的健康建议：\n\n"
+            "用户问题：{question}\n\n"
             "相关医疗文档：\n{context}\n\n"
-            "回答要求：\n"
-            "1. 回答要简洁明了，控制在200字以内\n"
-            "2. 使用通俗易懂的语言，避免过多专业术语\n"
-            "3. 重点突出最关键的建议\n"
-            "4. 简单提醒咨询医生即可\n"
-            "5. 不需要复杂的格式，直接回答\n"
+            "请按以下要求回答：\n"
+            "1. **核心建议**：基于文档内容，提供最重要的2-3条建议\n"
+            "2. **注意事项**：列出需要特别注意的要点\n"
+            "3. **就医指导**：说明什么情况下需要就医\n"
+            "4. 语言要求：通俗易懂，避免过多医学术语\n"
+            "5. 长度控制：总体控制在300字以内，重点突出\n"
+            "6. 引用依据：适当提及文档中的证据等级或来源\n\n"
+            "注意：如果文档内容与问题不够匹配，请明确说明并建议咨询专业医生。"
         )
         
         self.no_context_prompt = (
-            "抱歉，在当前的医疗知识库中未找到与您问题直接相关的权威文档。\n"
-            "问题：{question}\n\n"
-            "建议：\n"
-            "1. 请咨询专业医生获取准确的医疗建议\n"
-            "2. 可以尝试重新描述问题或使用更具体的医学术语\n"
-            "3. 对于紧急情况，请立即就医\n"
+            "很抱歉，在当前的医疗知识库中未找到与您问题直接相关的权威文档。\n\n"
+            "用户问题：{question}\n\n"
+            "**建议方案：**\n"
+            "1. **重新描述**：尝试使用更具体的症状描述或医学术语\n"
+            "2. **专业咨询**：建议咨询相关科室的专业医生\n"
+            "3. **紧急情况**：如有急性症状，请立即就医或拨打急救电话\n"
+            "4. **在线资源**：可查阅权威医疗机构官网获取基础信息\n\n"
+            "**温馨提醒：**医疗问题具有个体差异性，专业医生的面诊是最可靠的诊疗方式。"
         )
 
     async def get_history(self, session_id: str) -> list[dict]:
@@ -308,7 +313,7 @@ class EnhancedMedicalRAGService:
                 logging.info(f"改进建议: {', '.join(query_quality.suggestions)}")
             
             # 根据查询质量调整后续处理策略
-            quality_threshold = 0.6
+            quality_threshold = 0.3  # 降低阈值，让更多查询使用KG增强
             use_enhanced_kg = query_quality.overall_score >= quality_threshold
             
             # 2. 上下文感知的知识图谱增强（基于意图识别结果和查询质量）
@@ -499,9 +504,9 @@ class EnhancedMedicalRAGService:
                 logging.info("查询质量较低，跳过医疗关联增强")
             
             # 4. 执行增强的医疗搜索
-            # 根据查询质量调整搜索参数
-            search_k = self.k if query_quality.overall_score > 0.7 else max(3, self.k - 2)
-            score_threshold = 0.3 if query_quality.overall_score > 0.7 else 0.5
+            # 根据查询质量调整搜索参数 - 优化检索策略
+            search_k = max(8, self.k) if query_quality.overall_score > 0.5 else max(6, self.k)  # 增加检索数量
+            score_threshold = 0.1 if query_quality.overall_score > 0.5 else 0.2  # 降低阈值，获取更多候选结果
             
             # 确保kg_enhanced_query已定义
             if 'kg_enhanced_query' not in locals():
@@ -670,46 +675,99 @@ class EnhancedMedicalRAGService:
             def calculate_weighted_score(result, weights):
                 """根据动态权重计算加权分数"""
                 base_score = result.get("score", 0.0)
+                text = result.get("text", "").lower()
+                metadata = result.get("metadata", {})
                 
                 # 语义相似度分数（基础分数）
                 semantic_score = base_score * weights['semantic_similarity']
                 
-                # 医疗相关性分数（基于元数据）
+                # 增强的医疗相关性分数
                 medical_score = 0.0
-                metadata = result.get("metadata", {})
-                if metadata.get("department"):
-                    medical_score += 0.3
-                if metadata.get("evidence_level") in ["A", "B"]:
-                    medical_score += 0.4
-                if metadata.get("document_type") in ["guideline", "protocol"]:
-                    medical_score += 0.3
-                medical_score *= weights['medical_relevance']
                 
-                # KG增强分数
+                # 科室匹配度
+                if metadata.get("department"):
+                    if intent_result and intent_result.get("department"):
+                        if metadata["department"] == intent_result["department"]:
+                            medical_score += 0.4  # 完全匹配
+                        else:
+                            medical_score += 0.2  # 部分匹配
+                    else:
+                        medical_score += 0.3  # 有科室信息
+                
+                # 证据等级评分
+                evidence_level = metadata.get("evidence_level", "")
+                if evidence_level == "A":
+                    medical_score += 0.4
+                elif evidence_level == "B":
+                    medical_score += 0.3
+                elif evidence_level == "C":
+                    medical_score += 0.2
+                
+                # 文档类型评分
+                doc_type = metadata.get("document_type", "")
+                if doc_type in ["guideline", "protocol"]:
+                    medical_score += 0.3
+                elif doc_type in ["research", "case_study"]:
+                    medical_score += 0.2
+                
+                # 关键词匹配度增强
+                query_keywords = question.lower().split()
+                keyword_matches = 0
+                for keyword in query_keywords:
+                    if len(keyword) > 2 and keyword in text:
+                        keyword_matches += 1
+                
+                if query_keywords:
+                    keyword_ratio = keyword_matches / len(query_keywords)
+                    medical_score += keyword_ratio * 0.3
+                
+                medical_score = min(medical_score, 1.0) * weights['medical_relevance']
+                
+                # KG增强分数（改进匹配逻辑）
                 kg_score = 0.0
                 if use_enhanced_kg and kg_suggestions:
-                    text_lower = result.get("text", "").lower()
+                    matched_suggestions = 0
                     for suggestion in kg_suggestions:
-                        if suggestion.lower() in text_lower:
-                            kg_score += 0.2
+                        if suggestion.lower() in text:
+                            matched_suggestions += 1
+                    
+                    if kg_suggestions:
+                        kg_match_ratio = matched_suggestions / len(kg_suggestions)
+                        kg_score = kg_match_ratio * 0.8  # 提高KG匹配的权重
+                
                 kg_score = min(kg_score, 1.0) * weights['kg_enhancement']
                 
-                # 医疗关联分数
+                # 医疗关联分数（改进计算）
                 association_score = 0.0
                 if medical_associations:
-                    text_lower = result.get("text", "").lower()
+                    matched_associations = 0
                     for association in medical_associations:
-                        # 处理字典格式的关联数据
+                        target = ""
                         if isinstance(association, dict):
                             target = association.get("target", "")
-                            if target and target.lower() in text_lower:
-                                association_score += 0.15
                         elif isinstance(association, str):
-                            if association.lower() in text_lower:
-                                association_score += 0.15
+                            target = association
+                        
+                        if target and target.lower() in text:
+                            matched_associations += 1
+                    
+                    if medical_associations:
+                        association_ratio = matched_associations / len(medical_associations)
+                        association_score = association_ratio * 0.6
+                
                 association_score = min(association_score, 1.0) * weights['medical_associations']
                 
-                return semantic_score + medical_score + kg_score + association_score
+                # 计算最终加权分数
+                final_score = semantic_score + medical_score + kg_score + association_score
+                
+                # 添加长度惩罚（避免过长或过短的文档）
+                text_length = len(result.get("text", ""))
+                if text_length < 50:  # 太短
+                    final_score *= 0.8
+                elif text_length > 2000:  # 太长
+                    final_score *= 0.9
+                
+                return final_score
             
             # 重新排序结果
             for result in results_list:
