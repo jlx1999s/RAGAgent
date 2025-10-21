@@ -184,7 +184,7 @@ class MedicalVectorStoreManager:
             return True
             
         except Exception as e:
-            logger.error(f"添加文档到向量存储 {store_key} 失败: {e}")
+            logger.error(f"删除向量存储 {store_key} 失败: {e}", exc_info=True)
             return False
     
     def search_documents(self,
@@ -329,24 +329,31 @@ class MedicalVectorStoreManager:
         store_key = self._get_store_key(department, document_type, disease_category)
         
         try:
+            logger.info(f"开始删除向量存储: {store_key}")
+            
             # 从内存中移除
             if store_key in self.vector_stores:
                 del self.vector_stores[store_key]
+                logger.info(f"从内存中移除向量存储: {store_key}")
             
             if store_key in self.metadata_cache:
                 del self.metadata_cache[store_key]
+                logger.info(f"从元数据缓存中移除: {store_key}")
             
             # 删除文件
             store_path = self._get_store_path(store_key)
             if store_path.exists():
                 import shutil
                 shutil.rmtree(store_path)
+                logger.info(f"删除存储文件: {store_path}")
+            else:
+                logger.warning(f"存储文件不存在: {store_path}")
             
             logger.info(f"成功删除向量存储: {store_key}")
             return True
             
         except Exception as e:
-            logger.error(f"删除向量存储 {store_key} 失败: {e}")
+            logger.error(f"删除向量存储 {store_key} 失败: {e}", exc_info=True)
             return False
     
     def optimize_stores(self):

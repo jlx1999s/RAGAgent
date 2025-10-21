@@ -557,10 +557,39 @@ async def medical_search_drug_interactions(req: DrugSearchRequest):
 
 @app.get(f"{API_PREFIX}/medical/statistics", tags=["Medical Index"])
 async def medical_statistics():
-    """获取医疗向量存储统计信息"""
+    """获取医疗索引统计信息"""
     try:
         result = enhanced_index_service.get_vector_store_statistics()
         return result
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get(f"{API_PREFIX}/medical/knowledge-base/details", tags=["Medical Index"])
+async def get_knowledge_base_details():
+    """获取知识库详细信息"""
+    try:
+        result = enhanced_index_service.get_vector_store_statistics()
+        if result.get("ok"):
+            # 转换格式以匹配前端期望的数据结构
+            stores = []
+            store_details = result.get("store_details", {})
+            for store_key, details in store_details.items():
+                stores.append({
+                    "id": store_key,
+                    "department": details.get("department"),
+                    "document_type": details.get("document_type"),
+                    "disease_category": details.get("disease_category"),
+                    "document_count": details.get("document_count", 0),
+                    "created_at": details.get("created_at"),
+                    "last_updated": details.get("last_updated"),
+                    "is_loaded": details.get("is_loaded", False)
+                })
+            return {
+                "ok": True,
+                "stores": stores
+            }
+        else:
+            return result
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -596,9 +625,14 @@ class DeleteIndexRequest(BaseModel):
     documentType: str
     diseaseCategory: Optional[str] = None
 
+class RebuildIndexRequest(BaseModel):
+    department: str
+    documentType: str
+    diseaseCategory: Optional[str] = None
+
 @app.post(f"{API_PREFIX}/medical/index/delete", tags=["Medical Index"])
 async def medical_index_delete(req: DeleteIndexRequest):
-    """删除指定的医疗文档索引"""
+    """删除医疗索引"""
     try:
         result = enhanced_index_service.delete_document_index(
             department=req.department,
@@ -606,6 +640,52 @@ async def medical_index_delete(req: DeleteIndexRequest):
             disease_category=req.diseaseCategory
         )
         return result
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post(f"{API_PREFIX}/medical/index/rebuild", tags=["Medical Index"])
+async def medical_index_rebuild(req: RebuildIndexRequest):
+    """重建医疗索引"""
+    try:
+        # 首先删除现有索引
+        delete_result = enhanced_index_service.delete_document_index(
+            department=req.department,
+            document_type=req.documentType,
+            disease_category=req.diseaseCategory
+        )
+        
+        if not delete_result.get("ok", False):
+            return {"ok": False, "error": f"删除现有索引失败: {delete_result.get('error', '未知错误')}"}
+        
+        # 查找对应的文件ID并重建索引
+        # 这里需要根据部门、文档类型和疾病分类找到对应的文件
+        from services.index_service import DATA_ROOT
+        import os
+        
+        # 遍历数据目录寻找匹配的文件
+        for item in os.listdir(DATA_ROOT):
+            item_path = os.path.join(DATA_ROOT, item)
+            if os.path.isdir(item_path):
+                output_file = os.path.join(item_path, "output.md")
+                if os.path.exists(output_file):
+                    # 尝试重建这个文件的索引
+                    try:
+                        rebuild_result = build_medical_index(
+                            file_id=item,
+                            department=req.department,
+                            document_type=req.documentType,
+                            disease_category=req.diseaseCategory
+                        )
+                        if rebuild_result.get("ok"):
+                            return {
+                                "ok": True,
+                                "chunks": rebuild_result.get("chunks", 0),
+                                "message": "索引重建成功"
+                            }
+                    except Exception as rebuild_error:
+                        continue
+        
+        return {"ok": False, "error": "未找到可重建的文档"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

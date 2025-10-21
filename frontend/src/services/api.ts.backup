@@ -110,14 +110,14 @@ export async function deleteMedicalIndex(
 }> {
   try {
     const response = await fetch(`${getApiBaseUrl()}/medical/index/delete`, {
-      method: 'POST',
+      method: 'DELETE',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         department,
-        documentType: documentType,
-        diseaseCategory: diseaseCategory,
+        document_type: documentType,
+        disease_category: diseaseCategory,
       }),
     });
 
@@ -147,7 +147,7 @@ export async function getKnowledgeBaseDetails(): Promise<{
   }>;
 }> {
   try {
-    const response = await fetch(`${getApiBaseUrl()}/medical/knowledge-base/details`);
+    const response = await fetch(`${getApiBaseUrl()}/medical/statistics`);
     
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -155,16 +155,33 @@ export async function getKnowledgeBaseDetails(): Promise<{
     
     const data = await response.json();
     
-    // 直接返回后端数据，后端已经返回正确格式
-    return data;
+    // 转换数据格式
+    const stores = Object.entries(data.store_details || {}).map(([id, details]: [string, any]) => ({
+      id,
+      department: details.department,
+      document_type: details.document_type,
+      disease_category: details.disease_category,
+      document_count: details.document_count,
+      created_at: details.created_at,
+      last_updated: details.last_updated,
+      is_loaded: details.is_loaded,
+      file_size: details.file_size,
+      index_size: details.index_size,
+    }));
+
+    return {
+      ok: true,
+      stores,
+    };
   } catch (error) {
-    console.error("Failed to fetch knowledge base details:", error);
+    console.error('Failed to fetch knowledge base details:', error);
     return {
       ok: false,
       stores: [],
     };
   }
 }
+
 // 重建知识库索引
 export async function rebuildMedicalIndex(
   department: string,
@@ -183,8 +200,8 @@ export async function rebuildMedicalIndex(
       },
       body: JSON.stringify({
         department,
-        documentType: documentType,
-        diseaseCategory: diseaseCategory,
+        document_type: documentType,
+        disease_category: diseaseCategory,
       }),
     });
 
@@ -420,10 +437,10 @@ export async function buildMedicalIndex(
       body: JSON.stringify({
         fileId,
         department,
-        documentType: documentType,
-        diseaseCategory: diseaseCategory,
-        customMetadata: customMetadata,
-        markdownContent: markdownContent,
+        document_type: documentType,
+        disease_category: diseaseCategory,
+        custom_metadata: customMetadata,
+        markdown_content: markdownContent,
       }),
     });
 
@@ -461,8 +478,8 @@ export async function searchMedicalKnowledge(
         query,
         k,
         department,
-        documentType: documentType,
-        diseaseCategory: diseaseCategory,
+        document_type: documentType,
+        disease_category: diseaseCategory,
         score_threshold: scoreThreshold,
       }),
     });
@@ -527,8 +544,8 @@ export async function processMedicalChatStream(
         message,
         sessionId,
         department,
-        documentType: documentType,
-        diseaseCategory: diseaseCategory,
+        document_type: documentType,
+        disease_category: diseaseCategory,
         enable_safety_check: enableSafetyCheck,
       }),
     });

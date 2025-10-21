@@ -266,10 +266,14 @@ class EnhancedMedicalIndexService:
         """删除指定的文档索引"""
         
         try:
+            # 参数验证
             dept = MedicalDepartment(department)
             doc_type = DocumentType(document_type)
             disease_cat = DiseaseCategory(disease_category) if disease_category else None
             
+            logger.info(f"开始删除索引: department={department}, document_type={document_type}, disease_category={disease_category}")
+            
+            # 删除向量存储
             success = self.vector_store_manager.delete_store(
                 department=dept,
                 document_type=doc_type,
@@ -277,14 +281,39 @@ class EnhancedMedicalIndexService:
             )
             
             if success:
-                return {"ok": True, "message": "索引删除成功"}
+                # 清理相关缓存
+                try:
+                    from .cache_service import cache_service
+                    
+                    # 清理查询结果缓存
+                    cache_service.invalidate('query_result')
+                    cache_service.invalidate('medical_association')
+                    cache_service.invalidate('kg_expansion')
+                    
+                    logger.info(f"已清理相关缓存: department={department}, document_type={document_type}")
+                except Exception as cache_error:
+                    logger.warning(f"清理缓存时出现警告: {cache_error}")
+                
+                logger.info(f"索引删除成功: department={department}, document_type={document_type}")
+                return {
+                    "ok": True, 
+                    "message": "索引删除成功",
+                    "details": {
+                        "department": department,
+                        "document_type": document_type,
+                        "disease_category": disease_category,
+                        "cache_cleared": True
+                    }
+                }
             else:
+                logger.error(f"删除索引失败: department={department}, document_type={document_type}")
                 return {"ok": False, "error": "删除索引失败"}
                 
         except ValueError as e:
+            logger.error(f"无效的参数: {e}")
             return {"ok": False, "error": f"无效的参数: {e}"}
         except Exception as e:
-            logger.error(f"删除索引时发生错误: {e}")
+            logger.error(f"删除索引时发生错误: {e}", exc_info=True)
             return {"ok": False, "error": str(e)}
     
     def optimize_vector_stores(self) -> Dict[str, Any]:
