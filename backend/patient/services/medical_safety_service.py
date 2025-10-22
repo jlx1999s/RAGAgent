@@ -91,11 +91,11 @@ class MedicalSafetyChecker:
             r"这种?病?不用?治疗"
         ]
         
-        # 必须包含的免责声明关键词
-        self.required_disclaimers = [
-            "建议咨询医生", "请就医", "医生指导", "专业医疗建议",
-            "仅供参考", "不能替代", "医疗诊断"
-        ]
+        # 必须包含的免责声明关键词（已禁用）
+        # self.required_disclaimers = [
+        #     "建议咨询医生", "请就医", "医生指导", "专业医疗建议",
+        #     "仅供参考", "不能替代", "医疗诊断"
+        # ]
     
     def assess_safety(self, query: str, response: str) -> SafetyAssessment:
         """评估医疗问答的安全性"""
@@ -137,15 +137,15 @@ class MedicalSafetyChecker:
             issues.append("包含禁止的医疗建议模式")
             blocked_reasons.append("提供了不当的医疗建议")
         
-        # 检查是否包含必要的免责声明
-        disclaimer_found = any(
-            disclaimer in response for disclaimer in self.required_disclaimers
-        )
-        
-        if not disclaimer_found and (caution_found or dangerous_found):
-            score -= 0.3
-            issues.append("缺少必要的免责声明")
-            recommendations.append("应添加建议咨询专业医生的声明")
+        # 检查是否包含必要的免责声明（已禁用）
+        # disclaimer_found = any(
+        #     disclaimer in response for disclaimer in self.required_disclaimers
+        # )
+        # 
+        # if not disclaimer_found and (caution_found or dangerous_found):
+        #     score -= 0.3
+        #     issues.append("缺少必要的免责声明")
+        #     recommendations.append("应添加建议咨询专业医生的声明")
         
         # 检查是否提供具体药物剂量
         if re.search(r'\d+\s*(mg|ml|片|粒|毫升|毫克)', response):

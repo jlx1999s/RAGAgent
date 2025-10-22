@@ -10,6 +10,14 @@ from collections import defaultdict, Counter
 import pickle
 import os
 
+# 尝试导入Neo4j适配器
+try:
+    from .neo4j_adapter import Neo4jAdapter
+    NEO4J_ADAPTER_AVAILABLE = True
+except ImportError:
+    NEO4jAdapter = None
+    NEO4J_ADAPTER_AVAILABLE = False
+
 class EntityType(Enum):
     """实体类型枚举"""
     DISEASE = "disease"
@@ -59,12 +67,40 @@ class MedicalRelation:
 class MedicalKnowledgeGraph:
     """医疗知识图谱"""
     
-    def __init__(self, graph_path: Optional[str] = None):
+    def __init__(self, graph_path: Optional[str] = None, use_neo4j: bool = None):
+        # NetworkX图（始终保持作为回退）
         self.graph = nx.MultiDiGraph()
         self.entities: Dict[str, MedicalEntity] = {}
         self.entity_index: Dict[str, Set[str]] = defaultdict(set)  # name -> entity_ids
         self.type_index: Dict[EntityType, Set[str]] = defaultdict(set)  # type -> entity_ids
         self.graph_path = graph_path or "data/medical_knowledge_graph.pkl"
+        
+        # Neo4j适配器配置
+        self.use_neo4j = use_neo4j
+        if self.use_neo4j is None:
+            # 自动检测是否使用Neo4j
+            self.use_neo4j = (
+                NEO4J_ADAPTER_AVAILABLE and 
+                os.getenv("NEO4J_URI") is not None
+            )
+        
+        self.neo4j_adapter = None
+        if self.use_neo4j and NEO4J_ADAPTER_AVAILABLE:
+            try:
+                self.neo4j_adapter = Neo4jAdapter()
+                if not self.neo4j_adapter.is_available():
+                    print("Neo4j不可用，回退到NetworkX")
+                    self.use_neo4j = False
+                    self.neo4j_adapter = None
+                else:
+                    print("使用Neo4j作为图数据库后端")
+            except Exception as e:
+                print(f"Neo4j初始化失败，回退到NetworkX: {e}")
+                self.use_neo4j = False
+                self.neo4j_adapter = None
+        
+        if not self.use_neo4j:
+            print("使用NetworkX作为图数据库后端")
         
         # 预定义的医疗实体模式
         self.entity_patterns = {
@@ -215,6 +251,7 @@ class MedicalKnowledgeGraph:
     def add_entity(self, entity: MedicalEntity) -> bool:
         """添加实体"""
         try:
+            # 添加到NetworkX（始终保持）
             self.entities[entity.id] = entity
             self.graph.add_node(entity.id, **entity.__dict__)
             
@@ -223,6 +260,10 @@ class MedicalKnowledgeGraph:
             for alias in entity.aliases:
                 self.entity_index[alias.lower()].add(entity.id)
             self.type_index[entity.entity_type].add(entity.id)
+            
+            # 如果使用Neo4j，也添加到Neo4j
+            if self.use_neo4j and self.neo4j_adapter:
+                self.neo4j_adapter.add_entity(entity)
             
             return True
         except Exception as e:
@@ -235,6 +276,7 @@ class MedicalKnowledgeGraph:
             if relation.source_id not in self.entities or relation.target_id not in self.entities:
                 return False
             
+            # 添加到NetworkX（始终保持）
             self.graph.add_edge(
                 relation.source_id, 
                 relation.target_id,
@@ -243,6 +285,11 @@ class MedicalKnowledgeGraph:
                 evidence=relation.evidence,
                 **relation.attributes
             )
+            
+            # 如果使用Neo4j，也添加到Neo4j
+            if self.use_neo4j and self.neo4j_adapter:
+                self.neo4j_adapter.add_relation(relation)
+            
             return True
         except Exception as e:
             print(f"Error adding relation: {e}")
@@ -250,6 +297,14 @@ class MedicalKnowledgeGraph:
 
     def find_entities_by_name(self, name: str, fuzzy: bool = True) -> List[MedicalEntity]:
         """根据名称查找实体"""
+        # 优先使用Neo4j查询
+        if self.use_neo4j and self.neo4j_adapter:
+            try:
+                return self.neo4j_adapter.find_entities_by_name(name, fuzzy)
+            except Exception as e:
+                print(f"Neo4j查询失败，回退到NetworkX: {e}")
+        
+        # NetworkX回退查询
         name_lower = name.lower()
         entity_ids = set()
         
@@ -267,6 +322,14 @@ class MedicalKnowledgeGraph:
 
     def find_entities_by_type(self, entity_type: EntityType) -> List[MedicalEntity]:
         """根据类型查找实体"""
+        # 优先使用Neo4j查询
+        if self.use_neo4j and self.neo4j_adapter:
+            try:
+                return self.neo4j_adapter.find_entities_by_type(entity_type)
+            except Exception as e:
+                print(f"Neo4j查询失败，回退到NetworkX: {e}")
+        
+        # NetworkX回退查询
         entity_ids = self.type_index.get(entity_type, set())
         return [self.entities[entity_id] for entity_id in entity_ids if entity_id in self.entities]
 
@@ -504,13 +567,24 @@ class MedicalKnowledgeGraph:
     
     def get_statistics(self) -> Dict[str, Any]:
         """获取知识图谱统计信息"""
+        # 优先使用Neo4j统计
+        if self.use_neo4j and self.neo4j_adapter:
+            try:
+                neo4j_stats = self.neo4j_adapter.get_statistics()
+                if neo4j_stats:
+                    return neo4j_stats
+            except Exception as e:
+                print(f"Neo4j统计查询失败，回退到NetworkX: {e}")
+        
+        # NetworkX回退统计
         stats = {
             "total_entities": len(self.entities),
             "total_relations": self.graph.number_of_edges(),
             "entity_types": {},
             "relation_types": {},
             "graph_density": nx.density(self.graph),
-            "connected_components": nx.number_weakly_connected_components(self.graph)
+            "connected_components": nx.number_weakly_connected_components(self.graph),
+            "backend": "networkx"
         }
         
         # 实体类型统计

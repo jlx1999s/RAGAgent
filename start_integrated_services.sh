@@ -10,6 +10,13 @@ FRONTEND_PORT=3000
 DOCTOR_BACKEND_PORT=8000
 PATIENT_BACKEND_PORT=8001
 
+# 设置环境变量
+export REDIS_URL="redis://localhost:6379/0"
+export NEO4J_URI="bolt://localhost:7687"
+export NEO4J_USERNAME="neo4j"
+export NEO4J_PASSWORD="password"
+echo "🔧 设置Redis环境变量: $REDIS_URL"
+
 # 函数：清理指定端口的进程
 cleanup_port() {
     local port=$1
@@ -50,6 +57,116 @@ check_directory() {
     return 0
 }
 
+# 函数：检查Redis服务状态
+check_redis_service() {
+    echo "🔍 检查Redis服务状态..."
+    
+    # 检查Redis是否运行
+    if redis-cli ping > /dev/null 2>&1; then
+        echo "✅ Redis服务运行正常"
+        return 0
+    else
+        echo "⚠️  Redis服务未运行，尝试启动..."
+        return 1
+    fi
+}
+
+# 函数：启动Redis服务
+start_redis_service() {
+    echo "🚀 启动Redis服务..."
+    
+    # 检查是否安装了Redis
+    if ! command -v redis-server &> /dev/null; then
+        echo "❌ 错误：Redis未安装，请先安装Redis"
+        echo "   macOS: brew install redis"
+        echo "   Ubuntu: sudo apt-get install redis-server"
+        echo "   CentOS: sudo yum install redis"
+        return 1
+    fi
+    
+    # 尝试启动Redis服务
+    if command -v brew &> /dev/null && brew services list | grep redis > /dev/null; then
+        # macOS with Homebrew
+        echo "📦 使用Homebrew启动Redis..."
+        brew services start redis
+        sleep 3
+    elif command -v systemctl &> /dev/null; then
+        # Linux with systemd
+        echo "🐧 使用systemctl启动Redis..."
+        sudo systemctl start redis-server
+        sleep 3
+    else
+        # 手动启动Redis
+        echo "🔧 手动启动Redis服务..."
+        nohup redis-server > logs/redis.log 2>&1 &
+        sleep 3
+    fi
+    
+    # 验证Redis是否启动成功
+    if redis-cli ping > /dev/null 2>&1; then
+        echo "✅ Redis服务启动成功"
+        return 0
+    else
+        echo "❌ Redis服务启动失败"
+        return 1
+    fi
+}
+
+# 函数：检查Neo4j服务状态
+check_neo4j_service() {
+    echo "🔍 检查Neo4j服务状态..."
+    
+    # 检查Neo4j是否运行 (默认端口7687)
+    if timeout 5 bash -c "</dev/tcp/localhost/7687" > /dev/null 2>&1; then
+        echo "✅ Neo4j服务运行正常"
+        return 0
+    else
+        echo "⚠️  Neo4j服务未运行，尝试启动..."
+        return 1
+    fi
+}
+
+# 函数：启动Neo4j服务
+start_neo4j_service() {
+    echo "🚀 启动Neo4j服务..."
+    
+    # 检查是否安装了Neo4j
+    if ! command -v neo4j &> /dev/null; then
+        echo "❌ 错误：Neo4j未安装，请先安装Neo4j"
+        echo "   macOS: brew install neo4j"
+        echo "   Ubuntu: 请参考Neo4j官方文档安装"
+        echo "   或使用Docker: docker run -d -p 7474:7474 -p 7687:7687 neo4j:latest"
+        return 1
+    fi
+    
+    # 尝试启动Neo4j服务
+    if command -v brew &> /dev/null && brew services list | grep neo4j > /dev/null; then
+        # macOS with Homebrew
+        echo "📦 使用Homebrew启动Neo4j..."
+        brew services start neo4j
+        sleep 5
+    elif command -v systemctl &> /dev/null; then
+        # Linux with systemd
+        echo "🐧 使用systemctl启动Neo4j..."
+        sudo systemctl start neo4j
+        sleep 5
+    else
+        # 手动启动Neo4j
+        echo "🔧 手动启动Neo4j服务..."
+        nohup neo4j start > logs/neo4j.log 2>&1 &
+        sleep 5
+    fi
+    
+    # 验证Neo4j是否启动成功
+    if timeout 10 bash -c "</dev/tcp/localhost/7687" > /dev/null 2>&1; then
+        echo "✅ Neo4j服务启动成功"
+        return 0
+    else
+        echo "❌ Neo4j服务启动失败"
+        return 1
+    fi
+}
+
 # 清理所有端口
 echo "🧹 清理端口占用..."
 cleanup_port $FRONTEND_PORT "前端服务"
@@ -63,6 +180,26 @@ echo "📁 检查项目目录..."
 check_directory "./frontend" "前端" || exit 1
 check_directory "./backend" "医生端后端" || exit 1
 check_directory "./backend/patient" "患者端后端" || exit 1
+
+echo ""
+
+# 检查并启动Redis服务
+echo "🔴 检查Redis服务..."
+if ! check_redis_service; then
+    if ! start_redis_service; then
+        echo "❌ Redis服务启动失败，将使用内存缓存作为回退方案"
+        echo "⚠️  建议手动启动Redis以获得更好的性能"
+    fi
+fi
+
+# 检查并启动Neo4j服务
+echo "🔵 检查Neo4j服务..."
+if ! check_neo4j_service; then
+    if ! start_neo4j_service; then
+        echo "❌ Neo4j服务启动失败，将使用NetworkX作为回退方案"
+        echo "⚠️  建议手动启动Neo4j以获得更好的图数据库性能"
+    fi
+fi
 
 echo ""
 
@@ -177,6 +314,30 @@ else
     echo "❌ 患者端后端服务启动失败"
 fi
 
+# 检查Redis服务
+echo "🔴 检查Redis缓存服务..."
+if redis-cli ping > /dev/null 2>&1; then
+    echo "✅ Redis缓存服务运行正常: redis://localhost:6379"
+    # 显示Redis信息
+    redis_info=$(redis-cli info server | grep redis_version | cut -d: -f2 | tr -d '\r')
+    echo "   Redis版本: $redis_info"
+else
+    echo "⚠️  Redis缓存服务未运行，系统将使用内存缓存"
+fi
+
+# 检查Neo4j服务
+echo "🔵 检查Neo4j图数据库服务..."
+if timeout 5 bash -c "</dev/tcp/localhost/7687" > /dev/null 2>&1; then
+    echo "✅ Neo4j图数据库服务运行正常: bolt://localhost:7687"
+    # 尝试获取Neo4j版本信息
+    if command -v cypher-shell &> /dev/null; then
+        neo4j_version=$(echo "CALL dbms.components() YIELD name, versions RETURN name, versions[0] as version" | cypher-shell -u neo4j -p password --format plain 2>/dev/null | grep "Neo4j Kernel" | awk '{print $3}' | tr -d '"' || echo "未知")
+        echo "   Neo4j版本: $neo4j_version"
+    fi
+else
+    echo "⚠️  Neo4j图数据库服务未运行，系统将使用NetworkX作为回退"
+fi
+
 echo ""
 echo "🎉 医疗多模态RAG系统整合服务启动完成！"
 echo ""
@@ -184,11 +345,27 @@ echo "📋 服务信息："
 echo "   🌐 前端服务:     http://localhost:$FRONTEND_PORT"
 echo "   🏥 医生端后端:   http://localhost:$DOCTOR_BACKEND_PORT"
 echo "   🤒 患者端后端:   http://localhost:$PATIENT_BACKEND_PORT"
+if redis-cli ping > /dev/null 2>&1; then
+    echo "   🔴 Redis缓存:    redis://localhost:6379 (已启用)"
+else
+    echo "   🔴 Redis缓存:    未运行 (使用内存缓存)"
+fi
+if timeout 5 bash -c "</dev/tcp/localhost/7687" > /dev/null 2>&1; then
+    echo "   🔵 Neo4j图数据库: bolt://localhost:7687 (已启用)"
+else
+    echo "   🔵 Neo4j图数据库: 未运行 (使用NetworkX)"
+fi
 echo ""
 echo "📝 日志文件："
 echo "   前端日志:       logs/frontend.log"
 echo "   医生端后端日志: logs/doctor_backend.log"
 echo "   患者端后端日志: logs/patient_backend.log"
+if [ -f "logs/redis.log" ]; then
+    echo "   Redis日志:      logs/redis.log"
+fi
+if [ -f "logs/neo4j.log" ]; then
+    echo "   Neo4j日志:      logs/neo4j.log"
+fi
 echo ""
 echo "🛑 停止服务请运行: ./stop_integrated_services.sh"
 echo ""

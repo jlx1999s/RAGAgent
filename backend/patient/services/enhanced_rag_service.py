@@ -940,20 +940,7 @@ class EnhancedMedicalRAGService:
                 }
             }
             
-            # 如果质量或安全性不足，添加警告
-            if (answer_review.quality.level == QualityLevel.LOW or 
-                answer_review.safety.level in [SafetyLevel.WARNING, SafetyLevel.DANGEROUS]):
-                
-                warning = "\n\n⚠️ **重要提醒**: 此回答仅供参考，请务必咨询专业医生获取准确的医疗建议。"
-                yield {"type": "token", "data": warning}
-        
-        # 添加医疗免责声明
-        disclaimer = (
-            "\n\n---\n"
-            "**医疗免责声明**: 以上信息仅供学习和参考目的，不能替代专业医疗建议、诊断或治疗。"
-            "如有健康问题，请咨询合格的医疗专业人员。"
-        )
-        yield {"type": "token", "data": disclaimer}
+
         
         # 保存会话历史
         if session_id:
