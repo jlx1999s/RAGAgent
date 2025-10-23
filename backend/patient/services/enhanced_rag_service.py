@@ -147,6 +147,12 @@ class EnhancedMedicalRAGService:
             "2. 可以尝试重新描述问题或使用更具体的医学术语\n"
             "3. 对于紧急情况，请立即就医\n"
         )
+        # 新增：非医疗问题回退提示词
+        self.non_medical_prompt = (
+            "该问题可能不属于医疗健康领域。\n"
+            "问题：{question}\n\n"
+            "请以通用知识助手身份给出简洁、友好的回答；避免提供医疗建议。\n"
+        )
 
     async def get_history(self, session_id: str) -> list[dict]:
         """获取会话历史（Redis/内存回退）"""
@@ -162,6 +168,29 @@ class EnhancedMedicalRAGService:
 
     def _get_llm(self):
         """获取语言模型"""
+        # 当 ChatTongyi 不可用或未配置 API Key 时，使用简易离线回退以便测试
+        if ChatTongyi is None or not os.getenv("DASHSCOPE_API_KEY"):
+            class _MockChunk:
+                def __init__(self, content: str):
+                    self.content = content
+            
+            class _MockLLM:
+                async def astream(self, msgs):
+                    # 取最后一条用户消息作为提示，生成固定演示回答
+                    try:
+                        user_msg = next((m for m in reversed(msgs) if m.get("role") == "user"), {"content": ""})
+                        q = user_msg.get("content", "")
+                    except Exception:
+                        q = ""
+                    text = "【离线演示】已接收问题并生成测试回答。"
+                    yield _MockChunk(text)
+                async def ainvoke(self, msgs):
+                    class _Resp:
+                        def __init__(self, content: str):
+                            self.content = content
+                    return _Resp("【离线演示】这是非流式测试回答，用于验证意图与检索逻辑集成。")
+            return _MockLLM()
+        
         return ChatTongyi(
             model=self.model_name,
             dashscope_api_key=os.getenv("DASHSCOPE_API_KEY"),
@@ -269,8 +298,8 @@ class EnhancedMedicalRAGService:
                             "康复指导": "护理手册",
                             "急救指南": "急救流程",
                             "保健指南": "临床指南",
-                            "健康指南": "临床指南"
-                        }
+                            "健康指南": "临床指南",
+                         }
                         mapped_doctype = doctype_mapping.get(document_type_str, document_type_str)
                         document_type = DocumentType(mapped_doctype)
                     except ValueError:
@@ -288,10 +317,13 @@ class EnhancedMedicalRAGService:
                     'disease_category': disease_category_str,
                     'confidence': confidence,
                     'reasoning': reasoning,
-                    'method': intent_method
+                    'method': intent_method,
+                    'is_medical': intent.get('is_medical', True),
+                    'keywords': intent.get('keywords', []),
+                    'candidates': intent.get('candidates', {})
                 }
                 
-                logging.info(f"意图识别完成 - 科室: {department_str}, 文档类型: {document_type_str}, 疾病分类: {disease_category_str}")
+                logging.info(f"意图识别完成 - 科室: {department_str}, 文档类型: {document_type_str}, 疾病分类: {disease_category_str}, is_medical: {intent_result['is_medical']}, 置信度: {confidence:.2f}")
             
             # 1.5. 查询质量评估
             query_quality = query_quality_assessor.assess_query_quality(
@@ -309,11 +341,48 @@ class EnhancedMedicalRAGService:
             if query_quality.suggestions:
                 logging.info(f"改进建议: {', '.join(query_quality.suggestions)}")
             
-            # 根据查询质量调整后续处理策略
-            quality_threshold = 0.6
-            use_enhanced_kg = query_quality.overall_score >= quality_threshold
+            # 非医疗回退 gating：如果识别为非医疗，则跳过检索流程
+            if intent_result and (intent_result.get('is_medical') is False):
+                metadata = {
+                    "total_results": 0,
+                    "departments": [],
+                    "document_types": [],
+                    "evidence_levels": [],
+                    "intent_recognition": intent_result,
+                    "query_quality": {
+                        "overall_score": query_quality.overall_score,
+                        "level": query_quality.quality_level.value,
+                        "clarity_score": query_quality.clarity_score,
+                        "specificity_score": query_quality.specificity_score,
+                        "medical_relevance": query_quality.medical_relevance,
+                        "completeness_score": query_quality.completeness_score,
+                        "complexity_score": query_quality.complexity_score,
+                        "suggestions": query_quality.suggestions
+                    },
+                    "kg_enhancement": {
+                        "enabled": False,
+                        "entities": [],
+                        "relations": [],
+                        "suggestions": []
+                    },
+                    "fallback": {
+                        "type": "non_medical",
+                        "reason": "识别为非医疗问题，跳过检索",
+                        "intent_confidence": intent_result.get('confidence', 0.0),
+                        "keywords": intent_result.get('keywords', []),
+                        "method": intent_result.get('method', 'smart')
+                    }
+                }
+                final_result = ([], "", metadata)
+                cache_service.set('query_result', cache_key, final_result, ttl=180)
+                return final_result
             
             # 2. 上下文感知的知识图谱增强（基于意图识别结果和查询质量）
+            # 根据查询质量和意图置信度决定是否启用KG增强
+            use_enhanced_kg = (
+                (query_quality.quality_level.value in ("good", "excellent")) or
+                ((intent_result.get('confidence', 0) if intent_result else 0) >= 0.75)
+            )
             kg_enhanced_query = question
             kg_entities = []
             kg_relations = []
@@ -912,14 +981,24 @@ class EnhancedMedicalRAGService:
                 if delta:
                     final_text_parts.append(delta)
                     yield {"type": "token", "data": delta}
-        except Exception:
-            # 回退到非流式
-            resp = await llm.ainvoke(msgs)
-            text = resp.content or ""
-            final_text_parts.append(text)
-            for i in range(0, len(text), 20):
-                yield {"type": "token", "data": text[i:i+20]}
-                await asyncio.sleep(0.005)
+        except Exception as e:
+            logging.warning(f"LLM streaming failed, falling back to offline mock: {e}")
+            # 优先尝试使用离线 MockLLM 的流式回退
+            try:
+                mock_llm = _MockLLM()
+                async for chunk in mock_llm.astream(msgs):
+                    delta = getattr(chunk, "content", None)
+                    if delta:
+                        final_text_parts.append(delta)
+                        yield {"type": "token", "data": delta}
+            except Exception:
+                # 最后回退到非流式离线生成
+                resp = await _MockLLM().ainvoke(msgs)
+                text = resp.content or ""
+                final_text_parts.append(text)
+                for i in range(0, len(text), 20):
+                    yield {"type": "token", "data": text[i:i+20]}
+                    await asyncio.sleep(0.005)
         
         # 生成的完整回答
         full_answer = "".join(final_text_parts)
@@ -947,12 +1026,17 @@ class EnhancedMedicalRAGService:
             await self.append_history(session_id, "user", question)
             await self.append_history(session_id, "assistant", full_answer)
         
+        # 计算是否为非医疗，来源于检索元数据中的意图识别
+        intent_meta = metadata.get("intent_recognition") or metadata.get("intent") or {}
+        is_non_medical = (intent_meta.get("is_medical") is False)
+        
         yield {
             "type": "done", 
             "data": {
                 "used_retrieval": has_context,
                 "safety_checked": enable_safety_check,
-                "citations_count": len(citations)
+                "citations_count": len(citations),
+                "non_medical": is_non_medical
             }
         }
 

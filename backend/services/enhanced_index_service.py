@@ -16,7 +16,7 @@ from langchain.embeddings.base import Embeddings
 
 from .index_service import DashScopeEmbeddings, load_embeddings, markdown_path, workdir
 from .medical_vector_store import MedicalVectorStoreManager, MedicalSearchEngine
-from .medical_taxonomy import MedicalDepartment, DocumentType, DiseaseCategory, MedicalMetadata
+from .medical_taxonomy import MedicalDepartment, DocumentType, DiseaseCategory
 from .medical_preprocessor import MedicalDocumentPreprocessor
 
 logger = logging.getLogger(__name__)
@@ -25,20 +25,32 @@ class EnhancedMedicalIndexService:
     """增强的医疗索引服务"""
     
     def __init__(self, 
-                 vector_store_base_path: str = "data/vector_stores",
+                 vector_store_base_path: Optional[str] = None,
                  embeddings: Optional[Embeddings] = None):
         
         # 初始化组件
         self.embeddings = embeddings or load_embeddings()
+        # 统一指向后端共享目录 backend/data/vector_stores（若无法定位backend则回退到repo根目录的data/vector_stores）
+        try:
+            backend_root = next((p for p in Path(__file__).resolve().parents if p.name == "backend"), None)
+            default_base = (backend_root / "data" / "vector_stores") if backend_root else Path("data/vector_stores").resolve()
+        except Exception:
+            default_base = Path("data/vector_stores").resolve()
+        base_path = Path(vector_store_base_path).resolve() if vector_store_base_path else default_base
+        
         self.vector_store_manager = MedicalVectorStoreManager(
-            base_path=vector_store_base_path,
+            base_path=str(base_path),
             embeddings=self.embeddings
         )
         self.search_engine = MedicalSearchEngine(self.vector_store_manager)
         self.preprocessor = MedicalDocumentPreprocessor()
         
-        # 创建数据目录
-        self.data_root = Path("data")
+        # 创建数据目录（统一到 backend/data）
+        try:
+            backend_root = next((p for p in Path(__file__).resolve().parents if p.name == "backend"), None)
+            self.data_root = (backend_root / "data") if backend_root else Path("data")
+        except Exception:
+            self.data_root = Path("data")
         self.data_root.mkdir(parents=True, exist_ok=True)
         
         logger.info("增强医疗索引服务初始化完成")

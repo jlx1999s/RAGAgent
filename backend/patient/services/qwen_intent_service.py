@@ -9,6 +9,7 @@ import logging
 from typing import Dict, Any, Optional
 from dashscope import Generation
 import dashscope
+from .medical_taxonomy import get_all_departments, get_all_document_types, get_all_disease_categories
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -26,33 +27,18 @@ class QwenMedicalIntentRecognizer:
         else:
             logger.warning("未找到DASHSCOPE_API_KEY环境变量，将使用降级方案")
         
-        # 医疗科室映射
-        self.departments = [
-            "心血管科", "骨科", "内科", "外科", "神经科", 
-            "呼吸科", "消化科", "内分泌科", "肾内科", "血液科",
-            "肿瘤科", "皮肤科", "眼科", "耳鼻喉科", "口腔科",
-            "妇产科", "儿科", "精神科", "康复科", "急诊科"
-        ]
+        # 使用简化分类体系的枚举值作为候选集合，避免细颗粒度科室
+        self.departments = get_all_departments()
         
-        # 疾病类别映射
-        self.disease_categories = [
-            "循环系统疾病", "肌肉骨骼系统疾病", "内分泌系统疾病",
-            "呼吸系统疾病", "消化系统疾病", "神经系统疾病",
-            "泌尿系统疾病", "血液系统疾病", "免疫系统疾病",
-            "皮肤疾病", "感染性疾病", "肿瘤疾病", "精神疾病",
-            "先天性疾病", "外伤疾病", "中毒疾病"
-        ]
+        # 采用统一的疾病分类集合（简化枚举）
+        self.disease_categories = get_all_disease_categories()
         
-        # 文档类型映射
-        self.document_types = [
-            "临床指南", "诊疗规范", "专家共识", "病例报告",
-            "研究论文", "药物说明", "检查标准", "手术指南",
-            "护理规范", "康复指导", "预防指南", "急救指南"
-        ]
+        # 采用统一的文档类型集合（简化枚举）
+        self.document_types = get_all_document_types()
     
     def create_intent_prompt(self, query: str) -> str:
-        """创建意图识别的提示词"""
-        prompt = f"""你是一个专业的医疗意图识别专家。请分析用户的医疗咨询问题，并识别出最相关的科室、疾病类别和文档类型。
+        """创建意图识别的提示词（含 is_medical 与候选项）"""
+        prompt = f"""你是专业的医疗意图识别专家。请判断用户问题是否为医疗相关，并识别最相关的科室、疾病类别和文档类型，同时给出候选项。
 
 用户问题：{query}
 
@@ -60,22 +46,27 @@ class QwenMedicalIntentRecognizer:
 可选疾病类别：{', '.join(self.disease_categories)}
 可选文档类型：{', '.join(self.document_types)}
 
-请严格按照以下JSON格式输出结果，不要包含任何其他文字：
-
+请严格输出纯JSON，且仅包含如下字段（禁止额外文本）：
 {{
-    "department": "最相关的科室名称",
-    "disease_category": "最相关的疾病类别",
-    "document_type": "最相关的文档类型",
-    "confidence": 0.95,
-    "reasoning": "详细的推理过程，说明为什么选择这些分类",
-    "keywords": ["从问题中提取的关键医疗词汇"]
+  "is_medical": true,
+  "department": "最相关的科室名称或null",
+  "disease_category": "最相关的疾病类别或null",
+  "document_type": "最相关的文档类型或null",
+  "confidence": 0.95,
+  "reasoning": "简明推理说明",
+  "keywords": ["提取的关键医疗词汇"],
+  "candidates": {{
+    "departments": ["最多3个候选，来自可选科室"],
+    "document_types": ["最多3个候选，来自可选文档类型"],
+    "disease_categories": ["最多3个候选，来自可选疾病类别"]
+  }}
 }}
 
-注意：
-1. confidence应该是0-1之间的数值，表示识别的置信度
-2. 如果无法确定某个分类，请选择最可能的选项
-3. reasoning应该详细说明分析过程
-4. keywords应该包含问题中的关键医疗术语
+规则：
+1. 若为非医疗（is_medical=false），将department、document_type、disease_category均设为null，但仍需给出confidence、reasoning和keywords。
+2. confidence为0-1之间的小数。
+3. candidates每个数组最多3项，必须从提供的可选集合中选择；若主预测值存在，应置于对应候选数组首位。
+4. 严禁输出任何非JSON文本、注释或解释。
 """
         return prompt
     
@@ -106,37 +97,111 @@ class QwenMedicalIntentRecognizer:
             return None
     
     def parse_qwen_response(self, response_text: str) -> Dict[str, Any]:
-        """解析千问的响应"""
+        """解析千问的响应，补充 is_medical 与候选项，并进行基本校验"""
         try:
-            # 尝试提取JSON部分
+            # 提取JSON部分（容错）
             start_idx = response_text.find('{')
             end_idx = response_text.rfind('}') + 1
-            
-            if start_idx != -1 and end_idx > start_idx:
-                json_str = response_text[start_idx:end_idx]
-                result = json.loads(json_str)
-                
-                # 验证必要字段
-                required_fields = ['department', 'disease_category', 'document_type', 'confidence']
-                for field in required_fields:
-                    if field not in result:
-                        raise ValueError(f"缺少必要字段: {field}")
-                
-                # 确保置信度在合理范围内
-                if not isinstance(result['confidence'], (int, float)) or not (0 <= result['confidence'] <= 1):
-                    result['confidence'] = 0.8  # 默认置信度
-                
-                return result
-            else:
+            if start_idx == -1 or end_idx <= start_idx:
                 raise ValueError("响应中未找到有效的JSON格式")
-                
+
+            json_str = response_text[start_idx:end_idx]
+            result = json.loads(json_str)
+
+            # 验证必要字段存在（允许为 None，但必须有键）
+            required_fields = ['department', 'disease_category', 'document_type', 'confidence']
+            for field in required_fields:
+                if field not in result:
+                    raise ValueError(f"缺少必要字段: {field}")
+
+            # 置信度范围校验
+            conf = result.get('confidence')
+            if not isinstance(conf, (int, float)) or not (0 <= conf <= 1):
+                result['confidence'] = 0.8
+
+            # 标准化 is_medical
+            is_med = result.get('is_medical')
+            result['is_medical'] = bool(is_med) if isinstance(is_med, bool) else True
+
+            # 字段归一化与合法性校验
+            dept = result.get('department') or None
+            doc_type = result.get('document_type') or None
+            dis_cat = result.get('disease_category') or None
+
+            # 去除首尾空格
+            dept = dept.strip() if isinstance(dept, str) else None
+            doc_type = doc_type.strip() if isinstance(doc_type, str) else None
+            dis_cat = dis_cat.strip() if isinstance(dis_cat, str) else None
+
+            # 跨字段纠错：将误放的值归位
+            # 若 document_type 是科室（如“精神科”），而 department 为空或非法，则归到 department
+            if doc_type and doc_type in self.departments and (not dept or dept not in self.departments):
+                dept = doc_type
+                doc_type = None
+            # 若 department 是文档类型（如“临床指南”），而 document_type 为空或非法，则归到 document_type
+            if dept and dept in self.document_types and (not doc_type or doc_type not in self.document_types):
+                doc_type = dept
+                dept = None
+            # 若某字段值属于疾病类别但放错了位置，优先归到 disease_category
+            if dept and dept in self.disease_categories and (not dis_cat or dis_cat not in self.disease_categories):
+                dis_cat = dept
+                dept = None
+            if doc_type and doc_type in self.disease_categories and (not dis_cat or dis_cat not in self.disease_categories):
+                dis_cat = doc_type
+                doc_type = None
+
+            # 仅保留合法分类值
+            result['department'] = dept if dept in self.departments else None
+            result['document_type'] = doc_type if doc_type in self.document_types else None
+            result['disease_category'] = dis_cat if dis_cat in self.disease_categories else None
+
+            # 归一化候选项结构并过滤到合法集合
+            candidates = result.get('candidates') or {}
+            cand_depts = candidates.get('departments') or []
+            cand_docs = candidates.get('document_types') or []
+            cand_cats = candidates.get('disease_categories') or []
+
+            # 将主预测值放到候选首位并去重、限长
+            if result['department']:
+                cand_depts = [result['department']] + cand_depts
+            cand_depts = [x for x in cand_depts if x in self.departments]
+            cand_depts = list(dict.fromkeys(cand_depts))[:3]
+
+            if result['document_type']:
+                cand_docs = [result['document_type']] + cand_docs
+            cand_docs = [x for x in cand_docs if x in self.document_types]
+            cand_docs = list(dict.fromkeys(cand_docs))[:3]
+
+            if result['disease_category']:
+                cand_cats = [result['disease_category']] + cand_cats
+            cand_cats = [x for x in cand_cats if x in self.disease_categories]
+            cand_cats = list(dict.fromkeys(cand_cats))[:3]
+
+            result['candidates'] = {
+                'departments': cand_depts,
+                'document_types': cand_docs,
+                'disease_categories': cand_cats
+            }
+
+            # keywords 兜底
+            if not isinstance(result.get('keywords'), list):
+                result['keywords'] = []
+
+            return result
+
         except Exception as e:
             logger.error(f"解析千问响应时发生错误: {str(e)}")
-            # 返回默认结果
+            # 返回默认结果（避免误判非医疗导致直接跳过检索）
             return {
+                "is_medical": True,
                 "department": None,
                 "disease_category": None,
-                "document_type": "临床指南",
+                "document_type": None,
+                "candidates": {
+                    "departments": [],
+                    "document_types": [],
+                    "disease_categories": []
+                },
                 "confidence": 0.0,
                 "reasoning": f"解析失败: {str(e)}",
                 "keywords": []
@@ -148,7 +213,21 @@ class QwenMedicalIntentRecognizer:
         
         logger.info("使用降级方案进行意图识别")
         fallback_recognizer = MedicalIntentRecognizer()
-        return fallback_recognizer.recognize_intent(query)
+        mi = fallback_recognizer.recognize_intent(query)
+        return {
+            "is_medical": True,
+            "department": getattr(mi, 'department', None),
+            "document_type": getattr(mi, 'document_type', None),
+            "disease_category": getattr(mi, 'disease_category', None),
+            "confidence": getattr(mi, 'confidence', 0.0),
+            "reasoning": getattr(mi, 'reasoning', ""),
+            "keywords": getattr(mi, 'keywords', []) or [],
+            "candidates": {
+                "departments": [],
+                "document_types": [],
+                "disease_categories": []
+            }
+        }
     
     def recognize_intent(self, query: str) -> Dict[str, Any]:
         """识别医疗意图"""

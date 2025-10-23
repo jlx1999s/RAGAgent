@@ -16,7 +16,7 @@ from langchain.vectorstores import FAISS
 from langchain.embeddings.base import Embeddings
 from langchain.schema import Document
 
-from .medical_taxonomy import MedicalDepartment, DocumentType, DiseaseCategory, MedicalMetadata
+from .medical_taxonomy import MedicalDepartment, DocumentType, DiseaseCategory
 
 logger = logging.getLogger(__name__)
 
@@ -399,12 +399,12 @@ class MedicalSearchEngine:
             # 常见中文别名
             "精神障碍": DiseaseCategory.MENTAL_DISORDERS,
             "心理障碍": DiseaseCategory.MENTAL_DISORDERS,
-            "精神疾病": DiseaseCategory.NERVOUS_SYSTEM,  # 现有库归到神经系统疾病
-            "神经系统疾病": DiseaseCategory.NERVOUS_SYSTEM,
+            "精神疾病": DiseaseCategory.MENTAL_DISORDERS,  # 精神心理疾病
+        "神经系统疾病": DiseaseCategory.NEUROLOGICAL,  # 神经系统疾病
             "精神、行为和神经发育障碍": DiseaseCategory.MENTAL_DISORDERS,
             # 英文/拼写变体（如出现）
             "mental disorders": DiseaseCategory.MENTAL_DISORDERS,
-            "nervous system": DiseaseCategory.NERVOUS_SYSTEM,
+            "nervous system": DiseaseCategory.NEUROLOGICAL,
         }
         
         if filters:

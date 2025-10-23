@@ -720,7 +720,7 @@ async def medical_qa(req: MedicalChatRequest):
                     "康复指导": "护理手册",
                     "急救指南": "急救流程",
                     "保健指南": "临床指南",
-                    "健康指南": "临床指南"
+                    "健康指南": "临床指南",
                 }
                 mapped_doctype = doctype_mapping.get(document_type, document_type)
                 document_type_enum = DocumentType(mapped_doctype)

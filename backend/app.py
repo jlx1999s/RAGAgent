@@ -52,7 +52,7 @@ from services.medical_knowledge_graph import kg_service
 from services.medical_association_service import medical_association_service
 from services.medical_intent_service import recognize_medical_intent
 from services.qwen_intent_service import recognize_qwen_medical_intent
-from services.smart_intent_service import recognize_smart_medical_intent
+from services.smart_intent_service import recognize_medical_intent as recognize_smart_medical_intent
 from services.medical_taxonomy import MedicalDepartment, DocumentType, DiseaseCategory
 from fastapi.responses import StreamingResponse, JSONResponse
 # 原始RAG服务保留用于兼容性
@@ -793,6 +793,7 @@ async def medical_qa(req: MedicalChatRequest):
                     "预防指南": "临床指南",
                     "诊疗指南": "临床指南",
                     "治疗指南": "临床指南",
+                    "治疗方案": "临床指南",
                     "护理规范": "护理手册",
                     "康复指导": "护理手册",
                     "急救指南": "急救流程",
