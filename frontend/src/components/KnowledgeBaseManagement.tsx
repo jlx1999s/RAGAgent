@@ -3,7 +3,6 @@ import {
   getKnowledgeBaseDetails, 
   deleteMedicalIndex, 
   rebuildMedicalIndex, 
-  optimizeKnowledgeBase, 
   deleteMedicalDocumentByFileId,
   listDocumentsInStore,
   StoreDocument
@@ -17,7 +16,6 @@ import {
   Database, 
   Trash2, 
   RefreshCw, 
-  Settings, 
   FileText, 
   Calendar,
   HardDrive,
@@ -159,23 +157,7 @@ export function KnowledgeBaseManagement() {
     }
   };
 
-  // 优化所有知识库
-  const handleOptimize = async () => {
-    try {
-      setActionLoading('optimize');
-      const response = await optimizeKnowledgeBase();
-      
-      if (response.ok) {
-        toast.success(`优化完成，优化了 ${response.optimized_stores} 个知识库`);
-        await loadKnowledgeBases(); // 重新加载数据
-      }
-    } catch (error) {
-      console.error('Failed to optimize knowledge base:', error);
-      toast.error('优化知识库失败');
-    } finally {
-      setActionLoading(null);
-    }
-  };
+  // 已移除：优化存储功能
 
   // 格式化文件大小
   const formatFileSize = (bytes?: number) => {
@@ -283,60 +265,11 @@ export function KnowledgeBaseManagement() {
             上传Markdown
           </Button>
           
-          <Button
-            onClick={handleOptimize}
-            disabled={actionLoading === 'optimize'}
-          >
-            {actionLoading === 'optimize' ? (
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-            ) : (
-              <Settings className="w-4 h-4 mr-2" />
-            )}
-            优化存储
-          </Button>
+          {/* 已移除：优化存储按钮 */}
         </div>
       </div>
 
-      {/* 统计信息 */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-card rounded-lg p-4 border">
-          <div className="flex items-center space-x-2">
-            <Database className="w-5 h-5 text-blue-500" />
-            <span className="text-sm font-medium">总知识库数</span>
-          </div>
-          <p className="text-2xl font-bold mt-2">{stores.length}</p>
-        </div>
-        
-        <div className="bg-card rounded-lg p-4 border">
-          <div className="flex items-center space-x-2">
-            <FileText className="w-5 h-5 text-green-500" />
-            <span className="text-sm font-medium">总文档数</span>
-          </div>
-          <p className="text-2xl font-bold mt-2">
-            {stores.reduce((sum, store) => sum + store.document_count, 0)}
-          </p>
-        </div>
-        
-        <div className="bg-card rounded-lg p-4 border">
-          <div className="flex items-center space-x-2">
-            <CheckCircle className="w-5 h-5 text-green-500" />
-            <span className="text-sm font-medium">已加载</span>
-          </div>
-          <p className="text-2xl font-bold mt-2">
-            {stores.filter(store => store.is_loaded).length}
-          </p>
-        </div>
-        
-        <div className="bg-card rounded-lg p-4 border">
-          <div className="flex items-center space-x-2">
-            <HardDrive className="w-5 h-5 text-purple-500" />
-            <span className="text-sm font-medium">存储大小</span>
-          </div>
-          <p className="text-2xl font-bold mt-2">
-            {formatFileSize(stores.reduce((sum, store) => sum + (store.index_size || 0), 0))}
-          </p>
-        </div>
-      </div>
+      {/* 统计信息区域已按需求移除，仅保留知识库列表 */}
 
       {/* 知识库列表 */}
       <div className="bg-card rounded-lg border">
