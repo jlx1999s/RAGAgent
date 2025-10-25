@@ -1,0 +1,66 @@
+flowchart LR
+  subgraph Client[前端/调用方]
+    UI[Web/慢病管理前端]
+  end
+
+  subgraph API[FastAPI 医生端/患者端]
+    QA[/POST /medical/qa|chat/]
+    IDX_BUILD[/POST /medical/index/build/]
+    KG_SEARCH[/POST /knowledge-graph/entity/search/]
+    KG_ENH[/POST /knowledge-graph/enhance-query/]
+    ASSOC[/POST /medical/associations/search/]
+  end
+
+  subgraph Orchestrator[编排与增强]
+    RAG[enhanced_rag_service]
+    INTENT[smart/qwen/keyword 意图识别]
+    QUALITY[query_quality_assessor]
+    SAFETY[medical_safety_service]
+    STREAM[medical_answer_stream]
+  end
+
+  subgraph Retrieval[检索服务]
+    EIDX[enhanced_index_service]
+  end
+
+  subgraph Knowledge[知识增强]
+    KG[kg_service (知识图谱)]
+    ASSOC_SVC[medical_association_service]
+  end
+
+  subgraph Data[数据层]
+    VS[(FAISS 向量库: 按科室/类型/分类)]
+    MDOC[(Markdown/原文档)]
+    KG_STORE[(知识图谱存储)]
+    CACHE[(Redis/内存 state_store)]
+  end
+
+  subgraph Gen[生成模型]
+    LLM[LLM (Qwen/等)]
+  end
+
+  UI --> QA
+  UI --> IDX_BUILD
+  UI --> KG_SEARCH
+  UI --> KG_ENH
+  UI --> ASSOC
+
+  QA --> RAG
+  RAG --> INTENT
+  RAG --> QUALITY
+  RAG --> KG
+  RAG --> ASSOC_SVC
+  RAG --> EIDX
+  EIDX --> VS
+  RAG --> STREAM
+  STREAM --> LLM
+  STREAM --> SAFETY
+  STREAM --> CACHE
+  IDX_BUILD --> EIDX
+  EIDX --> MDOC
+  KG_SEARCH --> KG
+  KG_ENH --> KG
+  ASSOC --> ASSOC_SVC
+
+  KG --> KG_STORE
+  CACHE --> VS

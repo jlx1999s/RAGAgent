@@ -328,6 +328,74 @@ class EnhancedMedicalIndexService:
             logger.error(f"删除索引时发生错误: {e}", exc_info=True)
             return {"ok": False, "error": str(e)}
     
+    def delete_document_by_file_id(self,
+                                   file_id: str,
+                                   department: str,
+                                   document_type: str,
+                                   disease_category: Optional[str] = None) -> Dict[str, Any]:
+        """按 fileId 删除指定类别下的文档块（文档级删除）。"""
+        try:
+            dept = MedicalDepartment(department)
+            doc_type = DocumentType(document_type)
+            disease_cat = DiseaseCategory(disease_category) if disease_category else None
+            
+            deleted = self.vector_store_manager.delete_documents_by_file_id(
+                department=dept,
+                document_type=doc_type,
+                disease_category=disease_cat,
+                file_id=file_id
+            )
+            
+            if deleted > 0:
+                # 与整库删除保持一致，清理相关缓存
+                try:
+                    from .cache_service import cache_service
+                    cache_service.invalidate('query_result')
+                    cache_service.invalidate('medical_association')
+                    cache_service.invalidate('kg_expansion')
+                except Exception as cache_error:
+                    logger.warning(f"清理缓存时出现警告: {cache_error}")
+                
+                return {
+                    "ok": True,
+                    "message": "文档删除成功",
+                    "details": {
+                        "file_id": file_id,
+                        "department": department,
+                        "document_type": document_type,
+                        "disease_category": disease_category,
+                        "deleted_chunks": int(deleted)
+                    }
+                }
+            else:
+                return {"ok": False, "error": "未找到指定文档或删除失败"}
+        except ValueError as e:
+            return {"ok": False, "error": f"无效的参数: {e}"}
+        except Exception as e:
+            logger.error(f"按 fileId 删除文档失败: {e}", exc_info=True)
+            return {"ok": False, "error": str(e)}
+    
+    def list_documents(self,
+                           department: str,
+                           document_type: str,
+                           disease_category: Optional[str] = None) -> Dict[str, Any]:
+        """列出指定分类存储中的具体文档列表（按 file_id 聚合）。"""
+        try:
+            dept = MedicalDepartment(department)
+            doc_type = DocumentType(document_type)
+            disease_cat = DiseaseCategory(disease_category) if disease_category else None
+            docs = self.vector_store_manager.list_documents_by_store(
+                department=dept,
+                document_type=doc_type,
+                disease_category=disease_cat
+            )
+            return {"ok": True, "documents": docs}
+        except ValueError as e:
+            return {"ok": False, "error": f"无效的参数: {e}"}
+        except Exception as e:
+            logger.error(f"列出存储文档失败: {e}", exc_info=True)
+            return {"ok": False, "error": str(e)}
+
     def optimize_vector_stores(self) -> Dict[str, Any]:
         """优化向量存储"""
         try:

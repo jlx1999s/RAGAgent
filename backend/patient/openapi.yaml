@@ -15,6 +15,7 @@ tags:
   - name: Health
   - name: PDF
   - name: Index
+  - name: Medical Index
   # 已移除通用聊天（Chat）标签
 
 paths:
@@ -200,6 +201,25 @@ paths:
         "400":
           description: 未构建索引
 
+  /medical/index/delete-doc:
+    post:
+      tags: [Medical Index]
+      operationId: deleteMedicalDoc
+      summary: 按 fileId 删除指定类别下的文档块（文档级删除）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteDocRequest"
+      responses:
+        "200":
+          description: 删除结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteDocResult"
+
   # 已移除 /chat 与 /chat/clear 端点（统一改用医疗聊天端点）
 
 components:
@@ -269,5 +289,33 @@ components:
               metadata:
                 type: object
                 additionalProperties: true
+
+    DeleteDocRequest:
+      type: object
+      required: [fileId, department, documentType]
+      properties:
+        fileId: { type: string, example: f_7ibnm22t }
+        department: { type: string, example: "内科" }
+        documentType: { type: string, example: "病历" }
+        diseaseCategory:
+          type: string
+          nullable: true
+          example: "高血压"
+
+    DeleteDocResult:
+      type: object
+      properties:
+        ok: { type: boolean, example: true }
+        message: { type: string, example: "文档删除成功" }
+        details:
+          type: object
+          properties:
+            file_id: { type: string, example: "f_7ibnm22t" }
+            department: { type: string, example: "内科" }
+            document_type: { type: string, example: "病历" }
+            disease_category:
+              type: string
+              nullable: true
+            deleted_chunks: { type: integer, example: 7 }
 
     # 已移除通用聊天请求模型 ChatRequest

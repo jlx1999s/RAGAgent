@@ -3,11 +3,15 @@ import {
   getKnowledgeBaseDetails, 
   deleteMedicalIndex, 
   rebuildMedicalIndex, 
-  optimizeKnowledgeBase 
+  optimizeKnowledgeBase, 
+  deleteMedicalDocumentByFileId,
+  listDocumentsInStore,
+  StoreDocument
 } from '../services/api';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Dialog } from './ui/dialog';
+import { Label } from './ui/label';
 import { MarkdownUploadDialog } from './MarkdownUploadDialog';
 import { 
   Database, 
@@ -45,7 +49,15 @@ export function KnowledgeBaseManagement() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [selectedStore, setSelectedStore] = useState<KnowledgeStore | null>(null);
   const [markdownUploadOpen, setMarkdownUploadOpen] = useState(false);
-
+  // 文档级删除相关状态
+  const [docDeleteDialogOpen, setDocDeleteDialogOpen] = useState(false);
+  const [docDeleteStore, setDocDeleteStore] = useState<KnowledgeStore | null>(null);
+  const [docDeleteFileId, setDocDeleteFileId] = useState('');
+  // 文档列表状态
+  const [activeStoreId, setActiveStoreId] = useState<string | null>(null);
+  const [storeDocs, setStoreDocs] = useState<Record<string, StoreDocument[]>>({});
+  const [docListLoadingId, setDocListLoadingId] = useState<string | null>(null);
+  
   // 加载知识库数据
   const loadKnowledgeBases = async () => {
     try {
@@ -87,6 +99,41 @@ export function KnowledgeBaseManagement() {
       setActionLoading(null);
       setDeleteDialogOpen(false);
       setSelectedStore(null);
+    }
+  };
+
+  // 文档级删除（按 fileId）
+  const handleDeleteDocument = async () => {
+    if (!docDeleteStore) return;
+    const fileId = docDeleteFileId.trim();
+    if (!fileId) {
+      toast.error('请输入要删除的文档 fileId');
+      return;
+    }
+    try {
+      setActionLoading(`doc-delete-${docDeleteStore.id}`);
+      const response = await deleteMedicalDocumentByFileId(
+        fileId,
+        docDeleteStore.department,
+        docDeleteStore.document_type,
+        docDeleteStore.disease_category || undefined
+      );
+
+      if (response.ok) {
+        const chunkInfo = typeof response.deleted_chunks === 'number' ? `，删除了 ${response.deleted_chunks} 个文档块` : '';
+        toast.success(`文档删除成功${chunkInfo}`);
+        await loadKnowledgeBases();
+      } else {
+        toast.error(response.message || '文档删除失败');
+      }
+    } catch (error) {
+      console.error('Failed to delete document:', error);
+      toast.error('文档删除失败');
+    } finally {
+      setActionLoading(null);
+      setDocDeleteDialogOpen(false);
+      setDocDeleteStore(null);
+      setDocDeleteFileId('');
     }
   };
 
@@ -141,6 +188,60 @@ export function KnowledgeBaseManagement() {
   // 格式化日期
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleString('zh-CN');
+  };
+
+  // 加载某个知识库存储的文档列表
+  const loadStoreDocs = async (store: KnowledgeStore) => {
+    const key = store.id;
+    try {
+      setDocListLoadingId(key);
+      const res = await listDocumentsInStore(
+        store.department,
+        store.document_type,
+        store.disease_category || undefined
+      );
+      if (res.ok) {
+        setStoreDocs(prev => ({ ...prev, [key]: res.documents }));
+        setActiveStoreId(key);
+      } else {
+        toast.error(res.error || '获取文档列表失败');
+      }
+    } catch (error) {
+      console.error('Failed to load documents in store:', error);
+      toast.error('获取文档列表失败');
+    } finally {
+      setDocListLoadingId(null);
+    }
+  };
+
+  // 文档列表中的快速删除
+  const handleInlineDeleteDoc = async (store: KnowledgeStore, fileId: string) => {
+    try {
+      setActionLoading(`doc-inline-${store.id}-${fileId}`);
+      const response = await deleteMedicalDocumentByFileId(
+        fileId,
+        store.department,
+        store.document_type,
+        store.disease_category || undefined
+      );
+      if (response.ok) {
+        toast.success('文档删除成功');
+        // 从当前列表移除
+        setStoreDocs(prev => ({
+          ...prev,
+          [store.id]: (prev[store.id] || []).filter(d => d.file_id !== fileId)
+        }));
+        // 同步刷新统计
+        await loadKnowledgeBases();
+      } else {
+        toast.error(response.message || '文档删除失败');
+      }
+    } catch (error) {
+      console.error('Inline delete doc failed:', error);
+      toast.error('文档删除失败');
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   if (loading) {
@@ -242,7 +343,6 @@ export function KnowledgeBaseManagement() {
         <div className="p-4 border-b">
           <h2 className="text-lg font-semibold">知识库列表</h2>
         </div>
-        
         <div className="divide-y">
           {stores.length === 0 ? (
             <div className="p-8 text-center text-muted-foreground">
@@ -292,7 +392,6 @@ export function KnowledgeBaseManagement() {
                       </div>
                     </div>
                   </div>
-                  
                   {/* 操作按钮 */}
                   <div className="flex items-center space-x-2">
                     <Button
@@ -308,7 +407,39 @@ export function KnowledgeBaseManagement() {
                       )}
                       <span className="ml-1">重建</span>
                     </Button>
-                    
+                    {/* 查看文档列表按钮 */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => loadStoreDocs(store)}
+                      disabled={docListLoadingId === store.id}
+                    >
+                      {docListLoadingId === store.id ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <FileText className="w-4 h-4" />
+                      )}
+                      <span className="ml-1">查看文档</span>
+                    </Button>
+                    {/* 文档级删除按钮（旧方式） */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setDocDeleteStore(store);
+                        setDocDeleteDialogOpen(true);
+                        setDocDeleteFileId('');
+                      }}
+                      disabled={actionLoading === `doc-delete-${store.id}`}
+                      className="text-orange-600 hover:text-orange-700 hover:bg-orange-50"
+                    >
+                      {actionLoading === `doc-delete-${store.id}` ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <FileText className="w-4 h-4" />
+                      )}
+                      <span className="ml-1">删除文档</span>
+                    </Button>
                     <Button
                       variant="outline"
                       size="sm"
@@ -328,12 +459,44 @@ export function KnowledgeBaseManagement() {
                     </Button>
                   </div>
                 </div>
+                {/* 展开文档列表 */}
+                {activeStoreId === store.id && (
+                  <div className="mt-4 border-t pt-4 space-y-2">
+                    {(storeDocs[store.id] || []).length === 0 ? (
+                      <p className="text-sm text-muted-foreground">此存储暂无文档或加载失败。</p>
+                    ) : (
+                      (storeDocs[store.id] || []).map((doc) => (
+                        <div key={doc.file_id} className="flex items-center justify-between p-2 rounded-md bg-secondary/40">
+                          <div className="flex-1">
+                            <div className="text-sm font-medium">{doc.title || doc.file_id}</div>
+                            <div className="text-xs text-muted-foreground">fileId: {doc.file_id} · 块数: {doc.chunks} · 处理时间: {doc.processed_at || '未知'}</div>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleInlineDeleteDoc(store, doc.file_id)}
+                              disabled={actionLoading === `doc-inline-${store.id}-${doc.file_id}`}
+                              className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                            >
+                              {actionLoading === `doc-inline-${store.id}-${doc.file_id}` ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Trash2 className="w-4 h-4" />
+                              )}
+                              <span className="ml-1">删除</span>
+                            </Button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
               </div>
             ))
           )}
         </div>
       </div>
-
       {/* 删除确认对话框 */}
       {deleteDialogOpen && selectedStore && (
         <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
@@ -365,6 +528,62 @@ export function KnowledgeBaseManagement() {
                   disabled={actionLoading === `delete-${selectedStore.id}`}
                 >
                   {actionLoading === `delete-${selectedStore.id}` ? (
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-4 h-4 mr-2" />
+                  )}
+                  确认删除
+                </Button>
+              </div>
+            </div>
+          </div>
+        </Dialog>
+      )}
+
+      {/* 文档级删除对话框 */}
+      {docDeleteDialogOpen && docDeleteStore && (
+        <Dialog open={docDeleteDialogOpen} onOpenChange={setDocDeleteDialogOpen}>
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+            <div className="bg-card rounded-lg p-6 max-w-md w-full border">
+              <div className="mb-4">
+                <h3 className="text-lg font-semibold">文档级删除</h3>
+                <p className="text-xs text-muted-foreground mt-1">
+                  目标知识库：{docDeleteStore.department} - {docDeleteStore.document_type}{docDeleteStore.disease_category ? ` - ${docDeleteStore.disease_category}` : ''}
+                </p>
+              </div>
+
+              <div className="space-y-2 mb-6">
+                <Label htmlFor="fileId" className="text-sm font-medium">File ID</Label>
+                <input
+                  id="fileId"
+                  type="text"
+                  value={docDeleteFileId}
+                  onChange={(e) => setDocDeleteFileId(e.target.value)}
+                  placeholder="请输入要删除的文档 fileId，例如 qt-001"
+                  className="w-full rounded-md border border-border/60 bg-secondary/20 p-2 text-sm"
+                />
+                <p className="text-xs text-muted-foreground">
+                  提示：请确认该 fileId 属于上方所示的知识库分类。
+                </p>
+              </div>
+
+              <div className="flex justify-end space-x-2">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setDocDeleteDialogOpen(false);
+                    setDocDeleteStore(null);
+                    setDocDeleteFileId('');
+                  }}
+                >
+                  取消
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={handleDeleteDocument}
+                  disabled={actionLoading === `doc-delete-${docDeleteStore.id}`}
+                >
+                  {actionLoading === `doc-delete-${docDeleteStore.id}` ? (
                     <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                   ) : (
                     <Trash2 className="w-4 h-4 mr-2" />

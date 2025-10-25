@@ -1,0 +1,11 @@
+{
+  "department": "内科系统",
+  "document_type": "临床指南",
+  "disease_category": "心血管疾病",
+  "chunks_count": 1,
+  "processed_at": "2025-10-26T01:21:21.673097",
+  "custom_metadata": {
+    "source": "quick-test",
+    "author": "tester"
+  }
+}

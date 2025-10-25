@@ -329,34 +329,195 @@ class MedicalVectorStoreManager:
         store_key = self._get_store_key(department, document_type, disease_category)
         
         try:
-            logger.info(f"开始删除向量存储: {store_key}")
-            
             # 从内存中移除
             if store_key in self.vector_stores:
                 del self.vector_stores[store_key]
-                logger.info(f"从内存中移除向量存储: {store_key}")
             
             if store_key in self.metadata_cache:
                 del self.metadata_cache[store_key]
-                logger.info(f"从元数据缓存中移除: {store_key}")
             
             # 删除文件
             store_path = self._get_store_path(store_key)
             if store_path.exists():
                 import shutil
                 shutil.rmtree(store_path)
-                logger.info(f"删除存储文件: {store_path}")
-            else:
-                logger.warning(f"存储文件不存在: {store_path}")
             
             logger.info(f"成功删除向量存储: {store_key}")
             return True
             
         except Exception as e:
-            logger.error(f"删除向量存储 {store_key} 失败: {e}", exc_info=True)
+            logger.error(f"删除向量存储 {store_key} 失败: {e}")
             return False
-    
-    def optimize_stores(self):
+
+    def delete_documents_by_file_id(self,
+                                    department: MedicalDepartment,
+                                    document_type: DocumentType,
+                                    disease_category: Optional[DiseaseCategory],
+                                    file_id: str) -> int:
+        """按 file_id 从指定向量存储中删除文档块，返回删除数量。
+        如果删除后存储为空，则整体删除该存储。
+        """
+        try:
+            if self.embeddings is None:
+                logger.error("未提供embeddings，无法执行文档级删除")
+                return 0
+            
+            store_key = self._get_store_key(department, document_type, disease_category)
+            vector_store = self._load_vector_store(store_key)
+            if vector_store is None:
+                logger.warning(f"向量存储不存在或无法加载，跳过: {store_key}")
+                return 0
+            
+            # 收集保留与删除的文档
+            keep_docs: List[Document] = []
+            delete_count = 0
+            
+            try:
+                all_doc_ids = list(vector_store.index_to_docstore_id.values())
+            except Exception as e:
+                logger.error(f"读取文档ID映射失败: {e}")
+                return 0
+            
+            for doc_id in all_doc_ids:
+                doc = vector_store.docstore.search(doc_id)
+                if not doc:
+                    continue
+                if doc.metadata.get('file_id') == file_id:
+                    delete_count += 1
+                else:
+                    keep_docs.append(doc)
+            
+            if delete_count == 0:
+                logger.info(f"未找到 file_id={file_id} 的文档块于 {store_key}")
+                return 0
+            
+            # 若删除后为空，直接移除该存储
+            if not keep_docs:
+                self.delete_store(department, document_type, disease_category)
+                logger.info(f"删除后存储为空，已删除整个向量存储: {store_key}")
+                return delete_count
+            
+            # 重建存储（最简安全做法）
+            new_store = FAISS.from_documents(keep_docs, self.embeddings)
+            self.vector_stores[store_key] = new_store
+            store_path = self._get_store_path(store_key)
+            store_path.mkdir(parents=True, exist_ok=True)
+            new_store.save_local(str(store_path))
+            
+            # 更新并保存元数据
+            from datetime import datetime
+            current_time = datetime.now().isoformat()
+            if store_key in self.metadata_cache:
+                meta = self.metadata_cache[store_key]
+                meta.document_count = len(keep_docs)
+                meta.last_updated = current_time
+            else:
+                # 若无缓存元数据，补建一份
+                meta = VectorStoreMetadata(
+                    department=department,
+                    document_type=document_type,
+                    disease_category=disease_category,
+                    created_at=current_time,
+                    document_count=len(keep_docs),
+                    last_updated=current_time
+                )
+                self.metadata_cache[store_key] = meta
+            
+            metadata_file = store_path / "metadata.json"
+            meta_dict = asdict(meta)
+            meta_dict['department'] = meta.department.value if meta.department else None
+            meta_dict['document_type'] = meta.document_type.value if meta.document_type else None
+            meta_dict['disease_category'] = meta.disease_category.value if meta.disease_category else None
+            with open(metadata_file, 'w', encoding='utf-8') as f:
+                json.dump(meta_dict, f, ensure_ascii=False, indent=2)
+            
+            logger.info(f"按文档删除完成: store={store_key}, file_id={file_id}, 删除条目={delete_count}, 保留条目={len(keep_docs)}")
+            return delete_count
+        except Exception as e:
+            logger.error(f"按 file_id 删除文档失败: {e}", exc_info=True)
+            return 0
+
+    def list_documents_by_store(self, department: MedicalDepartment, document_type: DocumentType, disease_category: Optional[DiseaseCategory] = None) -> List[Dict[str, Any]]:
+        """列出指定向量存储中已索引的具体文档（按 file_id 聚合）。"""
+        store_key = self._get_store_key(department, document_type, disease_category)
+        vector_store = self._load_vector_store(store_key)
+        if vector_store is None:
+            return []
+
+        docs_by_file: Dict[str, Dict[str, Any]] = {}
+        try:
+            all_doc_ids = list(vector_store.index_to_docstore_id.values())
+        except Exception as e:
+            logger.error(f"读取文档ID映射失败: {e}")
+            return []
+
+        for doc_id in all_doc_ids:
+            doc = vector_store.docstore.search(doc_id)
+            if not doc:
+                continue
+            file_id = doc.metadata.get('file_id')
+            if not file_id:
+                # 跳过没有 file_id 的条目
+                continue
+            entry = docs_by_file.get(file_id)
+            if entry is None:
+                entry = {
+                    "file_id": file_id,
+                    "chunks": 0,
+                    "title": "",
+                    "processed_at": None
+                }
+                docs_by_file[file_id] = entry
+            entry["chunks"] += 1
+            # 采集标题
+            try:
+                if not entry["title"]:
+                    if doc.metadata.get('chunk_type') == 'title':
+                        title = doc.metadata.get('section_title') or ""
+                        if isinstance(title, str) and title.strip():
+                            entry["title"] = title.strip()
+                    else:
+                        content = doc.page_content or ""
+                        if isinstance(content, str) and content.strip():
+                            entry["title"] = content.strip()[:30]
+            except Exception:
+                pass
+            # 采集处理时间
+            if not entry["processed_at"]:
+                processed_at = doc.metadata.get('processed_at')
+                if processed_at:
+                    entry["processed_at"] = processed_at
+
+        # 从 processing_metadata.json 补充可能缺失的字段
+        try:
+            from .index_service import workdir
+            import json
+            from pathlib import Path
+            for file_id, entry in docs_by_file.items():
+                meta_path = workdir(file_id) / "processing_metadata.json"
+                try:
+                    if meta_path.exists() and (entry.get("processed_at") is None or not entry.get("title")):
+                        with open(meta_path, 'r', encoding='utf-8') as f:
+                            pm = json.load(f)
+                            if entry.get("processed_at") is None:
+                                entry["processed_at"] = pm.get("processed_at")
+                            cm = pm.get("custom_metadata") or {}
+                            possible_title = cm.get("title") or cm.get("name")
+                            if isinstance(possible_title, str) and possible_title.strip():
+                                entry["title"] = possible_title.strip()
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        docs = list(docs_by_file.values())
+        try:
+            docs.sort(key=lambda x: x.get("processed_at") or "", reverse=True)
+        except Exception:
+            pass
+        return docs
+
+def optimize_stores(self):
         """优化向量存储（合并小存储、重建索引等）"""
         logger.info("开始优化向量存储...")
         

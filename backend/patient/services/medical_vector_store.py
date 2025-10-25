@@ -348,7 +348,95 @@ class MedicalVectorStoreManager:
         except Exception as e:
             logger.error(f"删除向量存储 {store_key} 失败: {e}")
             return False
-    
+
+    def delete_documents_by_file_id(self,
+                                    department: MedicalDepartment,
+                                    document_type: DocumentType,
+                                    disease_category: Optional[DiseaseCategory],
+                                    file_id: str) -> int:
+        """按 file_id 从指定向量存储中删除文档块，返回删除数量。
+        如果删除后存储为空，则整体删除该存储。
+        """
+        try:
+            if self.embeddings is None:
+                logger.error("未提供embeddings，无法执行文档级删除")
+                return 0
+            
+            store_key = self._get_store_key(department, document_type, disease_category)
+            vector_store = self._load_vector_store(store_key)
+            if vector_store is None:
+                logger.warning(f"向量存储不存在或无法加载，跳过: {store_key}")
+                return 0
+            
+            # 收集保留与删除的文档
+            keep_docs: List[Document] = []
+            delete_count = 0
+            
+            try:
+                all_doc_ids = list(vector_store.index_to_docstore_id.values())
+            except Exception as e:
+                logger.error(f"读取文档ID映射失败: {e}")
+                return 0
+            
+            for doc_id in all_doc_ids:
+                doc = vector_store.docstore.search(doc_id)
+                if not doc:
+                    continue
+                if doc.metadata.get('file_id') == file_id:
+                    delete_count += 1
+                else:
+                    keep_docs.append(doc)
+            
+            if delete_count == 0:
+                logger.info(f"未找到 file_id={file_id} 的文档块于 {store_key}")
+                return 0
+            
+            # 若删除后为空，直接移除该存储
+            if not keep_docs:
+                self.delete_store(department, document_type, disease_category)
+                logger.info(f"删除后存储为空，已删除整个向量存储: {store_key}")
+                return delete_count
+            
+            # 重建存储（最简安全做法）
+            new_store = FAISS.from_documents(keep_docs, self.embeddings)
+            self.vector_stores[store_key] = new_store
+            store_path = self._get_store_path(store_key)
+            store_path.mkdir(parents=True, exist_ok=True)
+            new_store.save_local(str(store_path))
+            
+            # 更新并保存元数据
+            from datetime import datetime
+            current_time = datetime.now().isoformat()
+            if store_key in self.metadata_cache:
+                meta = self.metadata_cache[store_key]
+                meta.document_count = len(keep_docs)
+                meta.last_updated = current_time
+            else:
+                # 若无缓存元数据，补建一份
+                meta = VectorStoreMetadata(
+                    department=department,
+                    document_type=document_type,
+                    disease_category=disease_category,
+                    created_at=current_time,
+                    document_count=len(keep_docs),
+                    last_updated=current_time
+                )
+                self.metadata_cache[store_key] = meta
+            
+            metadata_file = store_path / "metadata.json"
+            meta_dict = asdict(meta)
+            meta_dict['department'] = meta.department.value if meta.department else None
+            meta_dict['document_type'] = meta.document_type.value if meta.document_type else None
+            meta_dict['disease_category'] = meta.disease_category.value if meta.disease_category else None
+            with open(metadata_file, 'w', encoding='utf-8') as f:
+                json.dump(meta_dict, f, ensure_ascii=False, indent=2)
+            
+            logger.info(f"按文档删除完成: store={store_key}, file_id={file_id}, 删除条目={delete_count}, 保留条目={len(keep_docs)}")
+            return delete_count
+        except Exception as e:
+            logger.error(f"按 file_id 删除文档失败: {e}", exc_info=True)
+            return 0
+
     def optimize_stores(self):
         """优化向量存储（合并小存储、重建索引等）"""
         logger.info("开始优化向量存储...")

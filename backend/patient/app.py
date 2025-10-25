@@ -612,6 +612,42 @@ async def medical_index_delete(req: DeleteIndexRequest):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+class DeleteDocRequest(BaseModel):
+    fileId: str
+    department: str
+    documentType: str
+    diseaseCategory: Optional[str] = None
+
+@app.post(f"{API_PREFIX}/medical/index/delete-doc", tags=["Medical Index"])
+async def medical_index_delete_doc(req: DeleteDocRequest):
+    """按 fileId 删除指定类别下的文档块（文档级删除）"""
+    try:
+        result = enhanced_index_service.delete_document_by_file_id(
+            file_id=req.fileId,
+            department=req.department,
+            document_type=req.documentType,
+            disease_category=req.diseaseCategory
+        )
+        return result
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+@app.get(f"{API_PREFIX}/medical/index/list-docs", tags=["Medical Index"]) 
+async def medical_index_list_docs(
+    department: str = Query(...),
+    documentType: str = Query(...),
+    diseaseCategory: Optional[str] = Query(None)
+):
+    """列出指定分类存储中的文档（按 fileId 聚合）。"""
+    try:
+        result = enhanced_index_service.list_documents(
+            department=department,
+            document_type=documentType,
+            disease_category=diseaseCategory
+        )
+        return result
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 @app.post(f"{API_PREFIX}/medical/index/optimize", tags=["Medical Index"])
 async def medical_index_optimize():
     """优化医疗向量存储"""

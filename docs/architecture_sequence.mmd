@@ -1,0 +1,29 @@
+sequenceDiagram
+  participant C as Client
+  participant API as FastAPI
+  participant R as enhanced_rag_service
+  participant I as Intent Service
+  participant Q as Quality Assessor
+  participant KG as KG Service
+  participant A as Association Service
+  participant E as enhanced_index_service
+  participant V as Vector Store
+  participant M as medical_answer_stream/LLM
+  participant S as Safety Service
+
+  C->>API: POST /api/v1/medical/qa (message,...)
+  API->>R: medical_retrieve(question, filters)
+  R->>I: recognize_*_medical_intent
+  R->>Q: assess(query)
+  alt 质量高且医疗相关
+    R->>KG: enhance_query_with_kg
+    R->>A: find_associations
+  end
+  R->>E: search_medical_documents
+  E->>V: query vector stores
+  E-->>R: citations/context/metadata
+  API->>M: medical_answer_stream(...)
+  M->>M: 结合上下文生成答案（token/citation/metadata）
+  M->>S: 安全审核
+  M-->>API: 聚合事件为最终JSON
+  API-->>C: {answer, citations, metadata, quality, safety, used_retrieval}

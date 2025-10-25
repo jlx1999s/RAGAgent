@@ -130,6 +130,43 @@ export async function deleteMedicalIndex(
   }
 }
 
+// 按 fileId 删除指定类别的文档（文档级删除）
+export async function deleteMedicalDocumentByFileId(
+  fileId: string,
+  department: string,
+  documentType: string,
+  diseaseCategory?: string
+): Promise<{
+  ok: boolean;
+  message: string;
+  deleted_chunks?: number;
+  error?: string;
+}> {
+  try {
+    const response = await fetch(`${getApiBaseUrl()}/medical/index/delete-doc`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        fileId,
+        department,
+        documentType: documentType,
+        diseaseCategory: diseaseCategory,
+      }),
+    });
+
+    return response.json();
+  } catch (error) {
+    return {
+      ok: false,
+      message: `文档删除失败: ${error instanceof Error ? error.message : '未知错误'}`,
+      deleted_chunks: 0,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
 // 获取知识库详细信息
 export async function getKnowledgeBaseDetails(): Promise<{
   ok: boolean;
@@ -747,5 +784,31 @@ export async function clearMedicalSession(sessionId = 'medical_default'): Promis
     return response.json();
   } catch (error) {
     throw new Error(`Clear session failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+export interface StoreDocument {
+  file_id: string;
+  title?: string;
+  chunks: number;
+  processed_at?: string | null;
+}
+export async function listDocumentsInStore(
+  department: string,
+  documentType: string,
+  diseaseCategory?: string
+): Promise<{
+  ok: boolean;
+  documents: StoreDocument[];
+  error?: string;
+}> {
+  try {
+    const params = new URLSearchParams({ department, documentType });
+    if (diseaseCategory) params.append('diseaseCategory', diseaseCategory);
+    const response = await fetch(`${getApiBaseUrl()}/medical/index/list-docs?${params.toString()}`);
+    if (!response.ok) throw new Error(`List docs failed: ${response.statusText}`);
+    return response.json();
+  } catch (error) {
+    return { ok: false, documents: [], error: error instanceof Error ? error.message : 'Unknown error' };
   }
 }
