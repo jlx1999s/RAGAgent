@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { 
   getKnowledgeBaseDetails, 
   deleteMedicalIndex, 
-  rebuildMedicalIndex, 
   deleteMedicalDocumentByFileId,
   listDocumentsInStore,
   StoreDocument
@@ -76,7 +75,7 @@ export function KnowledgeBaseManagement() {
     loadKnowledgeBases();
   }, []);
 
-  // 删除知识库
+  // 清空当前知识库
   const handleDelete = async (store: KnowledgeStore) => {
     try {
       setActionLoading(`delete-${store.id}`);
@@ -87,12 +86,12 @@ export function KnowledgeBaseManagement() {
       );
       
       if (response.ok) {
-        toast.success('知识库删除成功');
+        toast.success('知识库已清空');
         await loadKnowledgeBases(); // 重新加载数据
       }
     } catch (error) {
-      console.error('Failed to delete knowledge base:', error);
-      toast.error('删除知识库失败');
+      console.error('Failed to clear knowledge base:', error);
+      toast.error('清空知识库失败');
     } finally {
       setActionLoading(null);
       setDeleteDialogOpen(false);
@@ -100,8 +99,8 @@ export function KnowledgeBaseManagement() {
     }
   };
 
-  // 文档级删除（按 fileId）
-  const handleDeleteDocument = async () => {
+  // 文档级删除（增加确认）
+  const handleDeleteDocumentConfirmed = async () => {
     if (!docDeleteStore) return;
     const fileId = docDeleteFileId.trim();
     if (!fileId) {
@@ -119,7 +118,7 @@ export function KnowledgeBaseManagement() {
 
       if (response.ok) {
         const chunkInfo = typeof response.deleted_chunks === 'number' ? `，删除了 ${response.deleted_chunks} 个文档块` : '';
-        toast.success(`文档删除成功${chunkInfo}`);
+        toast.success(`文档已删除${chunkInfo}`);
         await loadKnowledgeBases();
       } else {
         toast.error(response.message || '文档删除失败');
@@ -135,27 +134,7 @@ export function KnowledgeBaseManagement() {
     }
   };
 
-  // 重建知识库
-  const handleRebuild = async (store: KnowledgeStore) => {
-    try {
-      setActionLoading(`rebuild-${store.id}`);
-      const response = await rebuildMedicalIndex(
-        store.department,
-        store.document_type,
-        store.disease_category || undefined
-      );
-      
-      if (response.ok) {
-        toast.success(`知识库重建成功，处理了 ${response.chunks} 个文档块`);
-        await loadKnowledgeBases(); // 重新加载数据
-      }
-    } catch (error) {
-      console.error('Failed to rebuild knowledge base:', error);
-      toast.error('重建知识库失败');
-    } finally {
-      setActionLoading(null);
-    }
-  };
+  // 已移除：重建知识库功能
 
   // 已移除：优化存储功能
 
@@ -327,19 +306,7 @@ export function KnowledgeBaseManagement() {
                   </div>
                   {/* 操作按钮 */}
                   <div className="flex items-center space-x-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleRebuild(store)}
-                      disabled={actionLoading === `rebuild-${store.id}`}
-                    >
-                      {actionLoading === `rebuild-${store.id}` ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <RefreshCw className="w-4 h-4" />
-                      )}
-                      <span className="ml-1">重建</span>
-                    </Button>
+                    {/* 已移除：重建按钮 */}
                     {/* 查看文档列表按钮 */}
                     <Button
                       variant="outline"
@@ -388,7 +355,7 @@ export function KnowledgeBaseManagement() {
                       ) : (
                         <Trash2 className="w-4 h-4" />
                       )}
-                      <span className="ml-1">删除</span>
+                      <span className="ml-1">清空当前知识库</span>
                     </Button>
                   </div>
                 </div>
@@ -402,13 +369,17 @@ export function KnowledgeBaseManagement() {
                         <div key={doc.file_id} className="flex items-center justify-between p-2 rounded-md bg-secondary/40">
                           <div className="flex-1">
                             <div className="text-sm font-medium">{doc.title || doc.file_id}</div>
-                            <div className="text-xs text-muted-foreground">fileId: {doc.file_id} · 块数: {doc.chunks} · 处理时间: {doc.processed_at || '未知'}</div>
+                            <div className="text-xs text-muted-foreground">fileId: {doc.file_id} · 处理时间: {doc.processed_at || '未知'}</div>
                           </div>
                           <div className="flex items-center space-x-2">
                             <Button
                               variant="outline"
                               size="sm"
-                              onClick={() => handleInlineDeleteDoc(store, doc.file_id)}
+                              onClick={() => {
+                                setDocDeleteStore(store);
+                                setDocDeleteFileId(doc.file_id);
+                                setDocDeleteDialogOpen(true);
+                              }}
                               disabled={actionLoading === `doc-inline-${store.id}-${doc.file_id}`}
                               className="text-red-600 hover:text-red-700 hover:bg-red-50"
                             >
@@ -437,12 +408,12 @@ export function KnowledgeBaseManagement() {
             <div className="bg-card rounded-lg p-6 max-w-md w-full border">
               <div className="flex items-center space-x-3 mb-4">
                 <AlertTriangle className="w-6 h-6 text-red-500" />
-                <h3 className="text-lg font-semibold">确认删除</h3>
+                <h3 className="text-lg font-semibold">清空当前知识库</h3>
               </div>
               
               <p className="text-muted-foreground mb-6">
-                确定要删除知识库 "{selectedStore.department} - {selectedStore.document_type}" 吗？
-                此操作不可撤销，将删除所有相关的索引数据。
+                确定要清空知识库 "{selectedStore.department} - {selectedStore.document_type}" 吗？
+                此操作将清空该知识库下所有索引与存储数据，操作不可撤销。
               </p>
               
               <div className="flex justify-end space-x-2">
@@ -465,7 +436,7 @@ export function KnowledgeBaseManagement() {
                   ) : (
                     <Trash2 className="w-4 h-4 mr-2" />
                   )}
-                  确认删除
+                  清空当前知识库
                 </Button>
               </div>
             </div>
@@ -513,7 +484,7 @@ export function KnowledgeBaseManagement() {
                 </Button>
                 <Button
                   variant="destructive"
-                  onClick={handleDeleteDocument}
+                  onClick={handleDeleteDocumentConfirmed}
                   disabled={actionLoading === `doc-delete-${docDeleteStore.id}`}
                 >
                   {actionLoading === `doc-delete-${docDeleteStore.id}` ? (
